@@ -486,7 +486,7 @@ export class MapView {
     const scaleTop = H - 34;
     // legend popover / panel
     if (showLegend) {
-      if (ov.legend === "panel") st(this.legendBox, { right: px(60), bottom: px(44), maxHeight: "", maxWidth: "", overflow: "" });
+      if (ov.legend === "panel") st(this.legendBox, { right: px(60), bottom: px(44), maxHeight: px(Math.max(60, H - 44 - (lb.b + 8))), maxWidth: px(W - 70 - M), overflow: "auto" });
       else {
         const lim = Math.max(row2, lb.b) + 8;
         st(this.legendBox, { right: px(zb + 24), bottom: px(40), maxHeight: px(Math.max(60, H - 40 - lim)), maxWidth: px(W - zb - 24 - M), overflow: "auto" });
@@ -494,12 +494,15 @@ export class MapView {
     }
     // layers popover: under its button if it ends above the zoom column, else left of the column
     const popTop = Math.max(lb.b + 6, row2 ? row2 + 6 : 0);
-    st(this.layers, { position: "absolute", right: "0px", top: px(popTop - top0), maxHeight: "", overflowY: "", width: "max-content", whiteSpace: "nowrap", maxWidth: px(W - zb - 34 - M) });
+    // Always an explicit px max-height: a host stylesheet's percentage max-height (the React shell has
+    // `.layers { max-height: calc(100% - 3.5rem) }`) would resolve against the layer box, which is only
+    // as tall as the Layers button because the list is absolutely positioned -> a ~10 px sliver.
+    st(this.layers, { position: "absolute", right: "0px", top: px(popTop - top0), maxHeight: "none", overflowY: "auto", width: "max-content", whiteSpace: "nowrap", maxWidth: px(W - zb - 34 - M) });
     if (!this.layers.hidden) {
       const nat = this.layers.scrollHeight;
       const lgR = showLegend ? rel(this.legendBox) : null;
       if (popTop + nat <= zCol.t - 8 && !row2) {
-        st(this.layers, { right: "0px", maxHeight: "" });
+        st(this.layers, { right: "0px", maxHeight: px(zCol.t - 8 - popTop) });
       } else {
         let limit = scaleTop;
         if (lgR) limit = Math.min(limit, lgR.t);
@@ -615,16 +618,27 @@ export class MapView {
     cv.addEventListener("wheel", (e) => {
       e.preventDefault();
       // mouse wheel and touchpad pinch (ctrl+wheel) both zoom, both directions
-      this.zoom(wheelFactor(e.deltaY, e.deltaMode), e.offsetX, e.offsetY);
+      const r = cv.getBoundingClientRect();      // client coordinates: independent of offsetX quirks / host scaling
+      this.zoom(wheelFactor(e.deltaY, e.deltaMode), e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
     cv.addEventListener("dblclick", (e) => {
       if (this.mode === "galaxy") {
-        const s = this.pickSector(e.offsetX, e.offsetY);
+        const r = cv.getBoundingClientRect();
+        const s = this.pickSector(e.clientX - r.left, e.clientY - r.top);
         if (s) this.showSector(s.id);
       } else this.auto();
     });
     const RO = this.win.ResizeObserver || (typeof ResizeObserver !== "undefined" ? ResizeObserver : null);
-    if (RO) { this.ro = new RO(() => this.resize()); this.ro.observe(this.body); }
+    if (RO) {
+      this.ro = new RO(() => this.resize()); this.ro.observe(this.body);
+      // overlays / tools change size with the host's font scale (root font-size %) even when the map
+      // container does not: re-place them on the next frame (coalesced)
+      this.ro2 = new RO(() => {
+        if (this._relayout) return;
+        this._relayout = this.win.requestAnimationFrame(() => { this._relayout = 0; if (this._dead) return; this.layoutTools(); if (this.w) this.layoutOverlays(); });
+      });
+      for (const e of [this.layersBtn, this.info, this.followBadge, this.segs, this.legendBox]) this.ro2.observe(e);
+    }
     this._onLayout = () => this.win.setTimeout(() => { if (!this._dead) this.resize(); }, 0);
     this.win.addEventListener("x4c-layout", this._onLayout);
     this.win.addEventListener("resize", this._onLayout);
@@ -663,6 +677,8 @@ export class MapView {
     this.closeFollowMenu();
     if (this.title && this.title.style) this.title.style.maxWidth = "";
     if (this.ro) this.ro.disconnect();
+    if (this.ro2) this.ro2.disconnect();
+    if (this._relayout) this.win.cancelAnimationFrame(this._relayout);
     this.win.removeEventListener("x4c-layout", this._onLayout);
     this.win.removeEventListener("resize", this._onLayout);
     for (const u of this._unsub) { try { u(); } catch (e) { /* ignore */ } }

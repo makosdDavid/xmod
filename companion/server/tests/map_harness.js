@@ -273,6 +273,52 @@ async function run() {
     m.destroy(); sec.remove();
   }
 
+  // ---------------- UI font scale (the shell sets the root font-size %): popovers + hit-testing
+  for (const [pct, bw, bh] of [80, 90, 100, 110, 125, 150].flatMap((p) => [[p, 900, 560], [p, 1600, 900], [p, 1600, 1150], [p, 300, 640]])) {
+    document.documentElement.style.fontSize = pct + "%";
+    try { localStorage.clear(); } catch (e) { /* isolation: no camera / settings from earlier tests */ }
+    const S = makeS(), bus = makeBus();
+    const root = document.createElement("div"); root.className = "x4map-root";
+    const b = box(bw, bh); b.append(root);
+    const m = new MapView(root, { S, bus });
+    m.setMode("sector"); m.cfg.legend = true; m.cfg.mini = true;
+    m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.view, { cx: 0, cz: 0, scale: 0.005 });
+    await sleep(60); m.resize(); frame(m); m.renderLegend();
+    m.togglePop("layers");
+    await sleep(60); frame(m);
+    const C = m.body.getBoundingClientRect(), L = m.layers.getBoundingClientRect();
+    const full = m.layers.clientHeight >= m.layers.scrollHeight - 1;
+    const scrolls = !full && m.win.getComputedStyle(m.layers).overflowY !== "visible" && m.layers.clientHeight >= 60;
+    const inside = L.top >= C.top - 0.5 && L.bottom <= C.bottom + 0.5 && L.left >= C.left - 0.5 && L.right <= C.right + 0.5;
+    const R = m.overlayRects(), lay = R.rects.layers, clash = [];
+    for (const k of ["legend", "mini", "scale", "zoom", "legendBtn", "miniBtn", "info"]) {
+      const o = R.rects[k];
+      if (lay && o && lay.l < o.r - 0.5 && lay.r > o.l + 0.5 && lay.t < o.b - 0.5 && lay.b > o.t + 0.5) clash.push(k);
+    }
+    const mh = m.win.getComputedStyle(m.layers).maxHeight;
+    check(lay && inside && (full || scrolls) && !clash.length && /px$/.test(mh) && L.height >= Math.min(m.layers.scrollHeight, 60),
+          `scale ${pct}% ${bw}x${bh}: Layers popover inside the map, ${Math.round(L.height)} px for ${m.layers.scrollHeight} px of chips${full ? "" : " (scrolls)"}, max-height ${mh}, no clash${clash.length ? " - " + clash.join(",") : ""}`);
+    // click / hover / wheel / sharpness
+    m.togglePop("layers"); frame(m);
+    const [ox, oy] = m.toScreen(30000, -20000);              // the own ship sh2
+    const cr = m.canvas.getBoundingClientRect();
+    const opt = { clientX: cr.left + ox, clientY: cr.top + oy, pointerId: 7, bubbles: true, button: 0 };
+    const diag = JSON.stringify({ n: (m.hit || []).length, mode: m.mode, sid: m.currentSid(), vs: m.viewSector, w: m.w, h: m.h, cam: m.cam, sh2: (m.hit || []).filter((q) => q.o.id === "sh2").map((q) => [Math.round(q.x), Math.round(q.y)]) });
+    m.canvas.dispatchEvent(new PointerEvent("pointerdown", opt)); m.canvas.dispatchEvent(new PointerEvent("pointerup", opt));
+    m.canvas.dispatchEvent(new PointerEvent("pointermove", { ...opt, pointerId: 8 }));
+    const tip = m.tip.getBoundingClientRect();
+    const [wx0, wz0] = m.toWorld(ox, oy);
+    m.canvas.dispatchEvent(new WheelEvent("wheel", { clientX: cr.left + ox, clientY: cr.top + oy, deltaY: -200, bubbles: true, cancelable: true }));
+    const [wx1, wz1] = m.toWorld(ox, oy);
+    const dpr = window.devicePixelRatio || 1;
+    check(S.selected && S.selected.id === "sh2" && !m.tip.hidden && Math.abs(tip.left - (cr.left + ox + 14)) < 2 && Math.abs(tip.top - (cr.top + oy + 12)) < 2
+          && Math.hypot(wx1 - wx0, wz1 - wz0) < 1 && m.canvas.width === Math.round(m.canvas.clientWidth * dpr),
+          `scale ${pct}% ${bw}x${bh}: click selects the object under the pointer, tooltip at the pointer, wheel zooms around it, canvas backing store = CSS size x dpr` + ` [sel ${S.selected && S.selected.id} tip ${Math.round(tip.left - cr.left - ox)},${Math.round(tip.top - cr.top - oy)} hidden ${m.tip.hidden} wheel ${Math.round(Math.hypot(wx1 - wx0, wz1 - wz0))} canvas ${m.canvas.width}/${m.canvas.clientWidth} at ${Math.round(ox)},${Math.round(oy)} hits ${diag}]`);
+    m.destroy(); b.remove();
+  }
+  document.documentElement.style.fontSize = "";
+
   // ---------------- M10: overlays never overlap / leave the container
   for (const [w, h] of [[1900, 950], [940, 510], [480, 360]]) {
     const S = makeS(), bus = makeBus();
