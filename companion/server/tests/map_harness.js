@@ -217,6 +217,62 @@ async function run() {
     m.destroy(); b.remove();
   }
 
+  // ---------------- header tools in a narrow panel (React shell PanelFrame structure)
+  {
+    const S = makeS(), bus = makeBus();
+    const sec = document.createElement("section");
+    sec.style.cssText = "display:flex;flex-direction:column;height:460px;overflow:hidden;border:1px solid #345;margin:4px";
+    sec.innerHTML = `<header style="display:flex;height:40px;flex-shrink:0;align-items:center;gap:8px;padding:0 6px 0 8px">
+        <span style="width:16px;height:16px;flex-shrink:0;background:#468"></span><span style="width:16px;height:16px;flex-shrink:0;background:#468"></span>
+        <span class="ttl" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;font-weight:600"></span>
+        <span class="panel-tools" style="margin-left:auto;display:flex;min-width:0;align-items:center;gap:6px;overflow:hidden"></span>
+        <span style="display:flex;flex-shrink:0;align-items:center"><button style="width:28px;height:28px"></button><button style="width:28px;height:28px"></button><button style="width:28px;height:28px"></button><button style="width:28px;height:28px"></button></span>
+      </header><div class="bd" style="position:relative;display:flex;flex-direction:column;flex:1;min-height:0"></div>`;
+    host.appendChild(sec);
+    const title = document.createElement("span"); title.className = "x4map-title";
+    const tools = document.createElement("span"); tools.className = "x4map-toolslot";
+    const root = document.createElement("div"); root.className = "x4map-root";
+    sec.querySelector(".ttl").append(title); sec.querySelector(".panel-tools").append(tools); sec.querySelector(".bd").append(root);
+    const m = new MapView(root, { S, bus, titleEl: title, toolsEl: tools });
+    const hdr = sec.querySelector("header"), pt = sec.querySelector(".panel-tools");
+    for (const lang of ["en", "hu"]) {
+      m.setTranslator(lang === "hu" ? createTranslator("hu") : null);
+      for (const w of [1100, 512, 360]) {
+        sec.style.width = w + "px";
+        await sleep(120); m.resize(); frame(m);
+        const H = hdr.getBoundingClientRect(), P = pt.getBoundingClientRect();
+        const ctl = m.toolControls().map((c) => [c === m.segSector ? "sector" : c === m.segGalaxy ? "galaxy" : c === m.retLbl ? "label" : c === m.selRet ? "select" : "followBtn", c.getBoundingClientRect()]);
+        const bad = [];
+        for (let i = 0; i < ctl.length; i++) {
+          const [n, a] = ctl[i];
+          if (a.left < H.left - 0.5 || a.right > H.right + 0.5 || a.left < P.left - 0.5 || a.right > P.right + 0.5) bad.push(n + " clipped/outside");
+          for (let j = i + 1; j < ctl.length; j++) {
+            const b = ctl[j][1];
+            if (a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5) bad.push(n + " x " + ctl[j][0]);
+          }
+        }
+        const g = m.segGalaxy.getBoundingClientRect();
+        const hit = document.elementFromPoint(g.left + g.width / 2, g.top + g.height / 2);
+        const clickable = hit && (hit === m.segGalaxy || m.segGalaxy.contains(hit));
+        const hasFollow = !m.selRet.hidden || !m.followBtn.hidden;
+        check(!bad.length && clickable && hasFollow && ctl.some((c) => c[0] === "sector") && ctl.some((c) => c[0] === "galaxy"),
+              `tools ${lang} ${w}px (${m.toolsMode}): switch + ship follow inside the header, no overlap, Galaxy clickable${bad.length ? " - " + bad.join("; ") : ""}`);
+      }
+    }
+    // the compact follow button opens a menu and sets the mode
+    sec.style.width = "360px"; await sleep(120); m.resize();
+    if (!m.followBtn.hidden) {
+      m.followBtn.click();
+      const items = m.followMenu ? [...m.followMenu.querySelectorAll("button")] : [];
+      const manual = items.find((b) => b.textContent.includes("Kézi"));
+      if (manual) manual.click();
+      check(items.length === 5 && m.cfg.ret === 0 && !m.followMenu, "narrow header: ship follow as a button with a menu (sets the mode)");
+    } else check(false, "narrow header: expected the compact follow button at 360 px");
+    m.segGalaxy.click();
+    check(m.mode === "galaxy", "narrow header: the Galaxy switch works");
+    m.destroy(); sec.remove();
+  }
+
   // ---------------- M10: overlays never overlap / leave the container
   for (const [w, h] of [[1900, 950], [940, 510], [480, 360]]) {
     const S = makeS(), bus = makeBus();

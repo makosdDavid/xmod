@@ -159,12 +159,28 @@ export class MapView {
     this.body = body;
     this.title = this.c.titleEl || r.querySelector(".ptitle");
     let tools = this.c.toolsEl || r.querySelector(".ptools");
-    this.segSector = this.mk("button", { class: "seg on", onclick: () => this.setMode("sector") });
-    this.segGalaxy = this.mk("button", { class: "seg", onclick: () => this.setMode("galaxy") });
-    this.selRet = this.mk("select", { class: "small", onchange: () => { this.cfg.ret = +this.selRet.value; this.save(); } },
+    // header tools: Sector/Galaxy switch + ship follow; layoutTools() fits them to the header width
+    const segBtn = (cls, icon, fn) => {
+      const b = this.mk("button", { class: cls, onclick: fn });
+      b._ic = iconEl(icon, 14); b._ic.style.display = "none"; b._ic.style.verticalAlign = "-2px";
+      b._lbl = this.mk("span", {});
+      b.append(b._ic, b._lbl);
+      Object.assign(b.style, { flex: "0 0 auto", whiteSpace: "nowrap" });
+      return b;
+    };
+    this.segSector = segBtn("seg on", "map", () => this.setMode("sector"));
+    this.segGalaxy = segBtn("seg", "galaxy", () => this.setMode("galaxy"));
+    this.selRet = this.mk("select", { class: "small", onchange: () => { this.cfg.ret = +this.selRet.value; this.save(); this.layoutTools(); } },
       ...[5, 8, 15, 30, 0].map((v) => this.mk("option", { value: v, selected: (this.cfg.ret ?? 8) === v })));
     this.segs = this.mk("span", { class: "segs" }, this.segSector, this.segGalaxy);
     this.retLbl = this.mk("span", { class: "muted small retlbl" });
+    this.followBtn = this.mk("button", { class: "followbtn", hidden: true, onclick: (e) => { e.stopPropagation(); this.toggleFollowMenu(); } });
+    this.followBtn.appendChild(iconEl("auto", 15));
+    Object.assign(this.segs.style, { flex: "0 0 auto", display: "inline-flex" });
+    Object.assign(this.retLbl.style, { flex: "0 0 auto", whiteSpace: "nowrap" });
+    Object.assign(this.selRet.style, { flex: "0 0 auto", minWidth: "0", textOverflow: "ellipsis" });
+    Object.assign(this.followBtn.style, { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 6px" });
+    this.toolsMode = "full";
     this.ownTools = !tools;
     if (!tools) {
       tools = this.mk("div", { class: "x4map-tools" });
@@ -172,8 +188,9 @@ export class MapView {
       body.appendChild(tools);
       this.toolsBar = tools;
     }
-    tools.prepend(this.segs, this.retLbl, this.selRet);
-    this._added.push(this.segs, this.retLbl, this.selRet);
+    tools.prepend(this.segs, this.retLbl, this.selRet, this.followBtn);
+    this._added.push(this.segs, this.retLbl, this.selRet, this.followBtn);
+    this.toolsEl = tools;
 
     this.canvas = this.mk("canvas", { class: "mapcanvas", tabindex: "-1" });
     Object.assign(this.canvas.style, { position: "absolute", left: "0", top: "0", display: "block", touchAction: "none" });
@@ -233,8 +250,9 @@ export class MapView {
   applyTexts() {
     const T = this.t;
     const set = (e, text, tip) => { if (text !== undefined) e.textContent = text; if (tip !== undefined) { e.title = tip; e.setAttribute("aria-label", tip); } };
-    set(this.segSector, T("map.seg.sector"), T("map.seg.sector.tip"));
-    set(this.segGalaxy, T("map.seg.galaxy"), T("map.seg.galaxy.tip"));
+    this.segSector._lbl.textContent = T("map.seg.sector"); set(this.segSector, undefined, T("map.seg.sector.tip"));
+    this.segGalaxy._lbl.textContent = T("map.seg.galaxy"); set(this.segGalaxy, undefined, T("map.seg.galaxy.tip"));
+    set(this.followBtn, undefined, T("map.ret.tip"));
     this.selRet.title = T("map.ret.tip");
     this.selRet.setAttribute("aria-label", T("map.ret"));
     this.retLbl.textContent = T("map.ret");
@@ -252,7 +270,127 @@ export class MapView {
     this.backLbl.textContent = T("map.back");
     this._fbText = null; this._infoKey = null; this._title = null;
     this.renderLegend();
+    this.layoutTools();
     this.dirty = true;
+  }
+
+  // ---------------------------------------------------------------- header tools fit the header width
+  // Modes, largest first: full (label + switch + select) -> nolabel (select shrinks, ellipsis) -> icon
+  // (follow select becomes a button with a menu) -> compact (switch shows icons). The first mode in
+  // which no control is clipped by the header / tools slot and none overlaps another wins.
+  toolsClip() {
+    const t = this.toolsEl;
+    if (!t || !t.isConnected) return null;
+    let clip = null;
+    const cut = (r) => { clip = clip ? { l: Math.max(clip.l, r.left), t: Math.max(clip.t, r.top), r: Math.min(clip.r, r.right), b: Math.min(clip.b, r.bottom) } : { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+    let e = t, depth = 0;
+    while (e && depth < 4) {
+      const st = this.win.getComputedStyle(e);
+      if (e === t.parentElement || e === this.root || st.overflowX !== "visible" || (t === this.toolsBar && e === this.body)) cut(e.getBoundingClientRect());
+      if (this.toolsBar ? e === this.body : (e.tagName === "HEADER" || e.classList.contains("phead"))) { cut(e.getBoundingClientRect()); break; }
+      e = e.parentElement; depth++;
+    }
+    return clip && clip.r - clip.l > 0 ? clip : null;
+  }
+  toolControls() {
+    return [this.segSector, this.segGalaxy, this.retLbl, this.selRet, this.followBtn].filter((c) => !c.hidden && c.getClientRects().length);
+  }
+  toolsFit(clip) {
+    const rs = this.toolControls().map((c) => c.getBoundingClientRect());
+    for (let i = 0; i < rs.length; i++) {
+      const a = rs[i];
+      if (a.width < 1 || a.left < clip.l - 0.5 || a.right > clip.r + 0.5) return false;
+      for (let j = i + 1; j < rs.length; j++) {
+        const b = rs[j];
+        if (a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5) return false;
+      }
+    }
+    return true;
+  }
+  applyToolsMode(m) {
+    this.toolsMode = m;
+    this.retLbl.hidden = m !== "full";
+    this.selRet.hidden = m === "icon" || m === "compact";
+    this.followBtn.hidden = !this.selRet.hidden;
+    this.selRet.style.maxWidth = "";
+    for (const b of [this.segSector, this.segGalaxy]) {
+      b._ic.style.display = m === "compact" ? "inline-block" : "none";
+      b._lbl.style.display = m === "compact" ? "none" : "";
+    }
+    if (this.selRet.hidden) this.closeFollowMenu();
+  }
+  // the header row that holds the tools (React shell <header>, legacy .phead): the width left for the
+  // title + tools after everything else in it (grip, icon, window buttons, gaps, padding)
+  toolsHeader() {
+    const t = this.toolsEl;
+    if (!t || this.toolsBar) return null;
+    let hdr = t.parentElement, depth = 0;
+    while (hdr && depth < 4 && !(hdr.tagName === "HEADER" || hdr.classList.contains("phead"))) { hdr = hdr.parentElement; depth++; }
+    if (!hdr || depth >= 4) return null;
+    const branch = (e) => { while (e && e.parentElement !== hdr) e = e.parentElement; return e; };
+    const toolsB = branch(t), titleB = this.title ? branch(this.title) : null;
+    return {
+      titleB,
+      room: () => {
+        const st = this.win.getComputedStyle(hdr);
+        const kids = [...hdr.children].filter((k) => k.getClientRects().length);
+        const gap = parseFloat(st.columnGap) || 0;
+        let used = (parseFloat(st.paddingLeft) || 0) + (parseFloat(st.paddingRight) || 0) + gap * Math.max(0, kids.length - 1);
+        for (const k of kids) if (k !== toolsB && k !== titleB) used += k.getBoundingClientRect().width;
+        return hdr.clientWidth - used;
+      },
+    };
+  }
+  layoutTools() {
+    if (this._dead || !this.toolsEl) return;
+    const clip0 = this.toolsClip();
+    if (!clip0) return;                          // parked / not laid out: keep the last mode
+    const hdr = this.toolsHeader();
+    const titleEl = hdr && hdr.titleB ? this.title : null;
+    const MIN_TITLE = 64;
+    for (const m of ["full", "nolabel", "icon", "compact"]) {
+      this.applyToolsMode(m);
+      if (hdr) {
+        // the tools never get squeezed by the flex row: the title gives way (ellipsis) first
+        let need = this.toolsEl.scrollWidth;
+        let titleMax = hdr.room() - need - 2;
+        if (m === "nolabel" && titleMax < MIN_TITLE) {      // the select shrinks (ellipsis) before it turns into a button
+          const sw = this.selRet.getBoundingClientRect().width, want = Math.floor(sw - (MIN_TITLE - titleMax));
+          if (want >= 96) { this.selRet.style.maxWidth = want + "px"; need = this.toolsEl.scrollWidth; titleMax = hdr.room() - need - 2; }
+        }
+        if (m !== "compact" && titleMax < MIN_TITLE) continue;
+        if (titleEl) { titleEl.style.maxWidth = Math.max(0, Math.floor(titleMax)) + "px"; titleEl.style.overflow = "hidden"; titleEl.style.textOverflow = "ellipsis"; }
+      }
+      const clip = this.toolsClip();
+      if (clip && this.toolsFit(clip)) return;
+    }
+  }
+  toggleFollowMenu() {
+    if (this.followMenu) { this.closeFollowMenu(); return; }
+    const r = this.followBtn.getBoundingClientRect();
+    const menu = this.mk("div", { class: "x4map-followmenu", role: "menu" });
+    Object.assign(menu.style, { position: "fixed", zIndex: "1000", top: Math.round(r.bottom + 4) + "px", minWidth: "12rem",
+      background: "rgba(6,12,24,0.97)", border: "1px solid rgba(120,170,230,0.35)", borderRadius: "6px", padding: "4px",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: "2px" });
+    menu.append(this.mk("div", { style: { padding: "2px 8px", fontSize: "0.75rem", opacity: "0.7" } }, this.t("map.ret")));
+    for (const o of this.selRet.options) {
+      const on = o.value === this.selRet.value;
+      menu.append(this.mk("button", { role: "menuitemradio", "aria-checked": on ? "true" : "false",
+        style: { textAlign: "left", whiteSpace: "nowrap", padding: "4px 8px", fontWeight: on ? "600" : "" },
+        onclick: () => { this.selRet.value = o.value; this.selRet.dispatchEvent(new Event("change")); this.closeFollowMenu(); } },
+        (on ? "✓ " : "   ") + o.textContent));
+    }
+    this.doc.body.appendChild(menu);
+    const vw = this.win.innerWidth;
+    menu.style.left = Math.round(Math.max(4, Math.min(r.right - menu.offsetWidth, vw - menu.offsetWidth - 4))) + "px";
+    this.followMenu = menu;
+    this._menuAway = (e) => { if (!menu.contains(e.target) && e.target !== this.followBtn && !this.followBtn.contains(e.target)) this.closeFollowMenu(); };
+    this.doc.addEventListener("pointerdown", this._menuAway, true);
+  }
+  closeFollowMenu() {
+    if (!this.followMenu) return;
+    this.followMenu.remove(); this.followMenu = null;
+    this.doc.removeEventListener("pointerdown", this._menuAway, true);
   }
 
   setTranslator(t) { this.t = withFallback(t); this.applyTexts(); }
@@ -295,7 +433,6 @@ export class MapView {
     const ov = overlayModes(W, H);
     const prevSize = this.ov && this.ov.size;
     this.ov = ov;
-    this.retLbl.hidden = ov.size === "small";      // the select's options explain themselves
     if (prevSize && prevSize !== ov.size) { this.legendOpen = false; this.miniOpen = false; }
     const px = (n) => Math.round(n) + "px";
     const st = (e, o) => Object.assign(e.style, o);
@@ -523,6 +660,8 @@ export class MapView {
     this._dead = true;
     if (this.raf) this.win.cancelAnimationFrame(this.raf);
     if (this._camTimer) this.win.clearTimeout(this._camTimer);
+    this.closeFollowMenu();
+    if (this.title && this.title.style) this.title.style.maxWidth = "";
     if (this.ro) this.ro.disconnect();
     this.win.removeEventListener("x4c-layout", this._onLayout);
     this.win.removeEventListener("resize", this._onLayout);
@@ -651,6 +790,7 @@ export class MapView {
     const dpr = this.win.devicePixelRatio || 1;
     const w = b.clientWidth, h = b.clientHeight;
     if (!w || !h) { this.w = 0; this.h = 0; return; }
+    this.layoutTools();
     if (w === this.w && h === this.h && this._dpr === dpr) return;
     this.w = w; this.h = h; this._dpr = dpr;
     this.canvas.width = Math.max(1, Math.round(w * dpr));
