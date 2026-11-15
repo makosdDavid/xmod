@@ -83,6 +83,44 @@ class Page:
     async def goto(self, url: str):
         await self.call("Page.navigate", {"url": url})
 
+    # ---- real input events (what a user does), not JS-dispatched DOM events
+    async def click(self, x: float, y: float, count: int = 1):
+        await self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
+        for c in range(1, count + 1):
+            await self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": c})
+            await self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": c})
+
+    async def drag(self, x0: float, y0: float, x1: float, y1: float, steps: int = 8):
+        await self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x0, "y": y0})
+        await self.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x0, "y": y0, "button": "left", "clickCount": 1})
+        for i in range(1, steps + 1):
+            await self.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x0 + (x1 - x0) * i / steps,
+                                                         "y": y0 + (y1 - y0) * i / steps, "button": "left", "buttons": 1})
+        await self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x1, "y": y1, "button": "left", "clickCount": 1})
+
+    async def wheel(self, x: float, y: float, dy: float):
+        await self.call("Input.dispatchMouseEvent", {"type": "mouseWheel", "x": x, "y": y, "deltaX": 0, "deltaY": dy})
+
+    async def key(self, key: str, code: str | None = None, vk: int | None = None, mods: int = 0):
+        text = key if len(key) == 1 else ""
+        code = code or (("Digit" + key) if key.isdigit() else ("Key" + key.upper()) if len(key) == 1 and key.isalpha() else key)
+        vk = vk or (ord(key.upper()) if len(key) == 1 else 0)
+        base = {"key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk, "modifiers": mods}
+        await self.call("Input.dispatchKeyEvent", {"type": "keyDown", "text": text if not mods else "", **base})
+        await self.call("Input.dispatchKeyEvent", {"type": "keyUp", **base})
+
+    async def center_of(self, js_element: str):
+        """viewport centre of the element the JS expression returns (None if missing / invisible)"""
+        return await self.eval(f"""(() => {{ const e = {js_element}; if (!e) return null; const r = e.getBoundingClientRect();
+            if (!r.width || !r.height) return null; return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+
+    async def click_el(self, js_element: str, count: int = 1) -> bool:
+        c = await self.center_of(js_element)
+        if not c:
+            return False
+        await self.click(c[0], c[1], count)
+        return True
+
 
 class Browser:
     def __init__(self, width: int = 1600, height: int = 1000, port: int = 9333, profile: str = "headless-cdp"):

@@ -9,3 +9,4 @@ ui/node_modules/
 web-dist/
 # local user state (saved layouts)
 state/
+web-dist-candidate/

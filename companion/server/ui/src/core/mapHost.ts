@@ -7,6 +7,7 @@
 import { MapView } from "@web/map.js";
 import i18n, { mapT } from "@/i18n";
 import { bus, factionName, S, sectorName, select, watchSector, whereText } from "./store";
+import { getUI, isMapView, setView } from "./ui";
 
 interface Parts { container: HTMLElement; title: HTMLElement; tools: HTMLElement }
 let parts: Parts | null = null;
@@ -14,16 +15,30 @@ let parking: HTMLElement | null = null;
 let view: MapView | null = null;
 let attached = 0;
 
+let constructing = false;
 function newView(p: Parts): MapView {
+  constructing = true;
+  const nav0 = getUI().view;
   const v = new MapView(p.container, {
     S, bus, t: mapT, select, watchSector, sectorName, factionName, whereText,
     titleEl: p.title, toolsEl: p.tools,
   });
   // cluster layout (known clusters only, positions only) from the server: MAP-API.md setStaticMap
   if (S.staticMap && v.setStaticMap) v.setStaticMap(S.staticMap);
+  // navigation is the source of truth for sector / galaxy (the map follows bus "view" itself)
+  constructing = false;
+  if (nav0 === "galaxy" && v.mode !== "galaxy") v.setMode("galaxy");
+  else if (nav0 === "map" && v.mode !== "sector") v.setMode("sector");
   return v;
 }
 bus.on("staticmap", () => { if (view && view.setStaticMap && S.staticMap) view.setStaticMap(S.staticMap); });
+// the map changed its mode itself (header switch, zoom hand-over, "show on map"): keep the navigation in step
+bus.on("mapmode", (m: string) => {
+  if (constructing) return;
+  const nav = getUI().view;
+  const want = m === "galaxy" ? "galaxy" : "map";
+  if (isMapView(nav) && nav !== want) setView(want);
+});
 
 function ensure(): Parts {
   if (parts) return parts;

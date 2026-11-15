@@ -9,3 +9,4 @@ data/
 *.pyc
 node_modules/
 web-dist/
+web-dist-candidate/

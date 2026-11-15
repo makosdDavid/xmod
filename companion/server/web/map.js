@@ -662,6 +662,11 @@ export class MapView {
       else if (m.action === "zoom_fit") this.fit();
     });
     this.on("auto", () => this.auto());
+    // the host's navigation (React shell setView: "map" = sector view, "galaxy" = galaxy view)
+    this.on("view", (id) => {
+      if (id === "galaxy" && this.mode !== "galaxy") this.setMode("galaxy");
+      else if (id === "map" && this.mode !== "sector") this.setMode("sector");
+    });
     this.on("select", (sel) => this.onSelect(sel));
     this.on("sectorchange", () => {
       // manual camera (M7): centre and zoom stay exactly where the user left them
@@ -758,6 +763,57 @@ export class MapView {
     this.lastInteract = performance.now();
     this.dirty = true;
     this.saveCam();
+    this.zoomHandover(f, sx, sy);
+  }
+
+  // Seamless sector <-> galaxy like the game map: zooming out until the sector's hexagon is small hands
+  // the view to the galaxy (its hexagon there exactly where it was on screen, neighbours around it);
+  // zooming in on a sector in the galaxy until it fills the view enters that sector the same way.
+  // Hysteresis (0.4 / 0.9 of the shorter side) so it never flips back on its own.
+  sectorObjs(sid) {
+    const sc = this.S.scans && this.S.scans[sid];
+    let objs = (sc && (sc.objs || sc.items)) || [];
+    const gs = (this.S.gatesBySector && this.S.gatesBySector.get(String(sid))) || [];
+    if (!objs.some((o) => o.c === "gate")) objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z })));
+    return objs;
+  }
+  sectorHexR(sid) {
+    const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
+    const st = (this.secHex && this.secHex.get(String(sid))) || this.sectorHexTarget(String(sid), this.sectorObjs(sid), String(sid) === ps);
+    return hexRadiusOfApothem(st.shown || st.target);
+  }
+  zoomHandover(f, sx, sy) {
+    if (!this.w || !this.h) return;
+    const m = Math.min(this.w, this.h);
+    sx = sx ?? this.w / 2; sy = sy ?? this.h / 2;
+    if (this.mode === "sector" && f < 1) {
+      const sid = this.currentSid();
+      if (!sid) return;
+      const R = this.sectorHexR(sid);
+      if (2 * R * this.view.scale >= 0.4 * m) return;
+      const gs = this.sectorGeo(sid);
+      if (!gs || gs.unplaced) return;
+      const k = gs.r / R;                         // galaxy metres per sector metre
+      this.gview = { cx: gs.x + this.view.cx * k, cz: gs.z + this.view.cz * k, scale: clampScale(this.view.scale / k, "galaxy") };
+      this.setMode("galaxy");
+      this.toManual();
+      this.handoverAt = performance.now();
+    } else if (this.mode === "galaxy" && f > 1) {
+      const s = this.pickSector(sx, sy) || this.pickSector(this.w / 2, this.h / 2);
+      if (!s) return;
+      const gs = this.geo().sectors.get(String(s.id));
+      if (!gs || 2 * gs.r * this.gview.scale <= 0.9 * m) return;
+      const R = this.sectorHexR(s.id);
+      const k = gs.r / R;
+      this.view = { cx: (this.gview.cx - gs.x) / k, cz: (this.gview.cz - gs.z) / k, scale: clampScale(this.gview.scale * k, "sector") };
+      const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
+      this.viewSector = String(s.id) === ps ? null : String(s.id);
+      this.watch(this.viewSector);
+      this.setMode("sector");
+      this.toManual();
+      this.handoverAt = performance.now();
+      this.emit("mapsector", this.currentSid());
+    }
   }
   setMode(m) {
     m = m === "galaxy" ? "galaxy" : "sector";
