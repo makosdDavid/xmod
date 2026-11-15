@@ -91,6 +91,19 @@ export function iconSize(o, scale = 1) {
   return Math.round(base * scale);
 }
 
+// Abandoned, claimable ships: a ship class owned by the "ownerless" faction (the bridge sends the
+// owner as "o"; live 9.00 data: {"c":"ship_m","o":"ownerless","n":"Baku","ic":"ship_m_transporter_01"}).
+// Not: gates / accelerators / highways, lockboxes, wares, satellites, beacons, mines (ownerless by
+// nature, not ships), spacesuits, wrecks ("wr") and anything of the player.
+const OWNERLESS_SHIP = /^ship_(xs|s|m|l|xl)$/;
+export function isOwnerlessShip(o) {
+  if (!o || o.pl || o.wr || o.k) return false;
+  return o.o === "ownerless" && OWNERLESS_SHIP.test(o.c || o.class || "");
+}
+// the marker's accent: chartreuse, used by no holomap relation colour (player teal-green, neutral
+// light blue, enemy orange, hostile red, mission amber, visitor violet) and bright on blue/purple
+export const OWNERLESS_COLOR = { r: 206, g: 255, b: 38 };
+
 export function isShip(o) { const c = o && (o.c || o.class) || ""; return c.startsWith("ship_") || c === "spacesuit"; }
 
 // ---------------------------------------------------------------- radar coverage (hex cells)
@@ -331,6 +344,24 @@ export function sectorMarkerSpots(r) {
     label: { y: -inr + fs + 4, fs, maxW: r * 1.45 },
   };
 }
+
+// ---------------------------------------------------------------- sector border (sector view)
+// The game frames a sector with a flat-top hexagon around its explored area. The 9.00 UI Lua exposes
+// no sector extent (the holomap draws it natively; MD has sector.coresize/coreposition, which the
+// bridge does not send), so this is an APPROXIMATION: the hexagon centred on the sector origin whose
+// apothem circumscribes every known object and own radar circle with a margin, never below a minimum.
+export const SECTOR_HEX_MIN = 60000;           // m, apothem
+export const SECTOR_HEX_MARGIN = 1.06;
+export function sectorHexApothem(points = [], circles = [], min = SECTOR_HEX_MIN, margin = SECTOR_HEX_MARGIN) {
+  // a point (x, z) is inside the flat-top hexagon of apothem a iff its "hex norm" <= a
+  const hexNorm = (x, z) => Math.max(Math.abs(z), (Math.sqrt(3) * Math.abs(x) + Math.abs(z)) / 2);
+  let a = 0;
+  for (const p of points) if (p && Number.isFinite(p.x) && Number.isFinite(p.z)) a = Math.max(a, hexNorm(p.x, p.z));
+  for (const c of circles) if (c && Number.isFinite(c.x) && Number.isFinite(c.z) && c.r > 0) a = Math.max(a, hexNorm(c.x, c.z) + c.r);
+  return Math.max(min, a * margin);
+}
+// apothem -> vertex radius of a flat-top hexagon
+export const hexRadiusOfApothem = (a) => a * 2 / Math.sqrt(3);
 
 // polygons (convex, any orientation) overlap with a positive area? (separating axis test)
 export function polygonsOverlap(a, b, eps = 1e-6) {

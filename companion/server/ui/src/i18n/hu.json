@@ -187,7 +187,8 @@
     "title": "Keresés és ugrás",
     "desc": "Írj be egy nevet vagy azonosítót, Enter = ugrás a térképen",
     "more": "+{{n}} további – pontosíts a keresésen",
-    "back_ship": "Vissza a hajómra (követés)"
+    "back_ship": "Vissza a hajómra (követés)",
+    "ownerless": "Gazdátlan hajók (elfoglalhatók)"
   },
   "hk": {
     "panel_next": "következő nézet",
@@ -275,7 +276,10 @@
     "empty_scan": "Még nincs szektorkép erről a szektorról.",
     "gate": "Ugrókapu",
     "highway": "Szupersztráda",
-    "ownerless": "gazdátlan"
+    "ownerless": "gazdátlan",
+    "f_ownerless": "Gazdátlan",
+    "ownerless_badge": "Gazdátlan",
+    "ownerless_tip": "Elhagyott, gazdátlan hajó – elfoglalható"
   },
   "info": {
     "no_selection": "Nincs kijelölés",
@@ -288,6 +292,8 @@
     "target": "Célpont",
     "mission": "Küldetés",
     "owner": "Tulajdonos",
+    "status": "Állapot",
+    "ownerless_claim": "Gazdátlan – elfoglalható",
     "own_ships": "Saját hajók",
     "own_stations": "Saját állomások",
     "resources": "Nyersanyagok",

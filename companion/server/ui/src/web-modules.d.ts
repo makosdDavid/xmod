@@ -38,6 +38,8 @@ declare module "@web/mapstyle.js" {
   export function rgb(c: RGB | null | undefined, a?: number): string;
   export function hasIconExport(): boolean;
   export function staticClusterIndex(json: unknown): any;
+  export function isOwnerlessShip(o: any): boolean;
+  export const OWNERLESS_COLOR: RGB;
   export function galaxyIndex(liveGalaxy: any[], gates?: any[], scans?: Record<string, any>, hwlinks?: any[], staticByMacro?: any): {
     sectors: Map<string, any>; clusters: Map<string, any>; sectorByMacro: Map<string, string>;
     links: { a: string; b: string; kind: string }[]; stubs: any[]; gatesBySector: Map<string, any[]>;

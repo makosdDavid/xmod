@@ -1,7 +1,7 @@
 // Browser integration tests of the real map module (web/map.js) with a fake store/bus.
 // Run by tests/test_map_browser.py in headless Chromium; results in window.__results.
 import { MapView } from "../web/map.js";
-import { galaxyIndex, insideHex } from "../web/mapstyle.js";
+import { galaxyIndex, insideHex, hexPoints } from "../web/mapstyle.js";
 import { LIMITS } from "../web/camera.js";
 import { createTranslator } from "../web/map-strings.js";
 
@@ -135,6 +135,80 @@ async function run() {
     frame(m);
     check((m.lastLabels || []).some((l) => l.gate), "M8: gate label kept next to the player's label");
     m.destroy(); b.remove();
+  }
+
+  // ---------------- sector border hexagon (sector view)
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    S.factions = { argon: { n: "Argon", col: { r: 10, g: 200, b: 30 } }, teladi: { n: "Teladi", col: { r: 200, g: 180, b: 20 } } };
+    S.scans.s1.objs.find((o) => o.id === "sh2").rr = 40000;
+    const b = box(1000, 640);
+    const m = new MapView(b, { S, bus });
+    m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.view, { cx: 0, cz: 0, scale: 0.002 });
+    frame(m);
+    const hx = m.lastSectorHex, a = hx && hx.apothem;
+    const norm = (x, z) => Math.max(Math.abs(z), (Math.sqrt(3) * Math.abs(x) + Math.abs(z)) / 2);
+    const objsIn = [...S.scans.s1.objs, S.player.object].every((o) => norm(o.x, o.z) <= a + 1e-6);
+    const cells = [...((m.radarCache && m.radarCache.cells) || new Map()).values()];
+    const cellR = (m.radarCache.cell || 0) / Math.sqrt(3);
+    const cellsIn = cells.length > 0 && cells.every(([cx, cz]) => norm(cx, cz) + cellR <= a + 1e-6);
+    check(hx && objsIn && cellsIn, `sector border: the hexagon (apothem ${Math.round(a / 1000)} km) contains every object and all ${cells.length} known-area cells`);
+    check(hx.color === "rgb(10,200,30)", `sector border: owner colour (${hx.color})`);
+    S.sectors.get("s1").owner = "teladi"; frame(m);
+    check(m.lastSectorHex.color === "rgb(200,180,20)", "sector border: colour follows an owner change");
+    m.fit();
+    for (let i = 0; i < 4; i++) frame(m);
+    const R = m.lastSectorHex.R;
+    const vis = hexPoints(0, 0, R).map(([x, z]) => m.toScreen(x, z)).every(([x, y]) => x >= 0 && y >= 0 && x <= m.w && y <= m.h);
+    check(vis, "sector border: 'fit' shows all six vertices of the hexagon");
+    // growth: never while dragging, then smoothly up to the new size
+    m.toManual(); m.manualUntil = Infinity;
+    const a0 = m.lastSectorHex.apothem;
+    S.scans.s1.objs.push({ id: "far1", c: "station", n: "Far", o: "argon", x: 400000, z: 0 });
+    m.dragging = true; frame(m); frame(m);
+    const aDrag = m.lastSectorHex.apothem;
+    m.dragging = false; frame(m);
+    const a1 = m.lastSectorHex.apothem;
+    for (let i = 0; i < 80; i++) frame(m);
+    const a2 = m.lastSectorHex.apothem, tgt = m.lastSectorHex.target;
+    check(aDrag === a0 && a1 > a0 && a1 < tgt && Math.abs(a2 - tgt) < 1 && norm(400000, 0) <= a2,
+          `sector border: grows to contain a new far object smoothly (${Math.round(a0 / 1000)} -> ${Math.round(a1 / 1000)} -> ${Math.round(a2 / 1000)} km), not while dragging`);
+    S.scans.s1.objs.pop(); frame(m);
+    check(m.lastSectorHex.apothem === a2, "sector border: never shrinks back (no jumping)");
+    m.destroy(); b.remove();
+  }
+
+  // ---------------- abandoned (ownerless) ships: marker + always-on name at every zoom; layer toggle
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    S.scans.s1.objs.push({ id: "ab1", c: "ship_m", o: "ownerless", n: "Baku", x: 20000, z: 5000, ic: "ship_m_transporter_01" },
+                         { id: "lb1", c: "lockbox", o: "ownerless", n: "Lockbox", x: 21000, z: 5000 },
+                         { id: "sat1", c: "satellite", o: "ownerless", n: "Sat", x: 22000, z: 5000 });
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    m.toManual(); m.manualUntil = Infinity; m.cfg.labels = "off"; m.cfg.npc = false;
+    for (const [nm, sc] of [["min", LIMITS.sector.min], ["max", LIMITS.sector.max]]) {
+      Object.assign(m.view, { cx: 20000, cz: 5000, scale: sc });
+      frame(m);
+      const mk = m.lastOwnerless || [], lb = (m.lastLabels || []).filter((l) => l.ownerless);
+      check(mk.length === 1 && mk[0].id === "ab1" && lb.length === 1 && lb[0].text === "Baku",
+            `ownerless: marker + name drawn at ${nm} zoom (names off, other ships off; lockbox/satellite not marked)`);
+    }
+    Object.assign(m.view, { cx: 20000, cz: 5000, scale: 0.01 });
+    frame(m);
+    const idx = (id) => m.hit.findIndex((h) => h.o.id === id);
+    check(idx("ab1") > idx("sh1") && idx("ab1") < idx("g1") && idx("ab1") < idx("st1"), "ownerless: drawn above ordinary ships, below gates and stations");
+    check(/1 ownerless/.test(m.info.innerText), `ownerless: info box counts them ("${m.info.innerText.split("\n").find((l) => /ownerless/.test(l))}")`);
+    m.chips.ownerless.click(); frame(m);
+    check(m.cfg.ownerless === false && !(m.lastOwnerless || []).length && !(m.lastLabels || []).some((l) => l.ownerless), "ownerless: the layer toggle hides the marker and the always-on name");
+    m.chips.ownerless.click();
+    m.cfg.legend = true; m.renderLegend();
+    check(/Ownerless ship/.test(m.legendBox.innerText), "ownerless: legend entry");
+    m.destroy(); b.remove();
+    try { localStorage.clear(); } catch (e) { /* */ }
   }
 
   // ---------------- M7: manual camera is never moved by the app

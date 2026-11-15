@@ -129,6 +129,14 @@ returns their rectangles (tests use it).
   stations, labels, the player marker. Hit-testing walks the same list top → bottom (topmost wins).
 * Jump gate / accelerator / superhighway names (= destination sector) are shown at every zoom level
   (also with "Names: never"), with a dark backplate, placed around the icon so they do not stack.
+* Abandoned ships (`isOwnerlessShip` in `mapstyle.js`: ship class + owner `ownerless`, not wrecks /
+  own / property entries) get a dashed chartreuse ring (`OWNERLESS_COLOR`, slow pulse, still with
+  `prefers-reduced-motion`), an "abandoned" badge and an always-shown name; drawn above ordinary ships,
+  below gates / stations / the player. Layer `ownerless` (default on); the info box counts them.
+* Sector border: a flat-top hexagon in the owner's colour (player: `playercolor`, unowned: grey) with an
+  inner glow, black outside. **Approximation** (the UI Lua has no sector extent): centred on the sector
+  origin, apothem = everything known (objects, own radar circles) × 1.06, min 60 km
+  (`sectorHexApothem`); it only grows, eases in, holds while dragging; "fit" frames it.
 * Ship icons rotate only with the "Ship heading" layer (`headingOf`, default `headingFromYaw`: yaw in
   radians, clockwise from north/+z; verified against live movement, see `tests/test_mapstyle.mjs`).
 * Galaxy view: one flat-top hexagon per cluster (radius = the cluster grid edge, 1e7 m) with an

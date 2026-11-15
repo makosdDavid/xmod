@@ -57,5 +57,30 @@ check(Math.abs(headingFromYaw(-0.6805) * 180 / Math.PI - (-39.1)) < 0.5 && headi
       "headingFromYaw: yaw is already the screen heading (live-verified sign and zero)");
 check(headingFromYaw(undefined) === 0 && headingFromYaw(NaN) === 0, "headingFromYaw: missing yaw -> north");
 
+// abandoned (claimable) ships: ship class + owner "ownerless" (live: ship_m "Baku", ic ship_m_transporter_01)
+const { isOwnerlessShip } = await import("../web/mapstyle.js");
+check(isOwnerlessShip({ c: "ship_m", o: "ownerless", n: "Baku", ic: "ship_m_transporter_01" }) &&
+      ["ship_xs", "ship_s", "ship_l", "ship_xl"].every((c) => isOwnerlessShip({ c, o: "ownerless" })), "ownerless ship classes xs..xl -> abandoned ship");
+check(!["gate", "highwayentrygate", "lockbox", "collectablewares", "collectableammo", "satellite", "navbeacon", "resourceprobe", "mine",
+        "station", "buildstorage", "crate", "drop", "datavault", "lasertower", "asteroid", "spacesuit", ""].some((c) => isOwnerlessShip({ c, o: "ownerless" })),
+      "ownerless gates / lockboxes / wares / satellites / beacons / mines / stations / spacesuits are not abandoned ships");
+check(!isOwnerlessShip({ c: "ship_m", o: "argon" }) && !isOwnerlessShip({ c: "ship_m", o: "ownerless", pl: true }) &&
+      !isOwnerlessShip({ c: "ship_m", o: "ownerless", wr: true }) && !isOwnerlessShip({ c: "ship_m", o: "ownerless", k: "ship" }) && !isOwnerlessShip(null),
+      "owned / own / wreck / property entries are not abandoned ships");
+// sector border hexagon (approximation: circumscribes the known content around the sector origin)
+const { sectorHexApothem, hexRadiusOfApothem, insideHex } = await import("../web/mapstyle.js");
+{
+  const pts = [{ x: 150000, z: 0 }, { x: 0, z: -90000 }, { x: -80000, z: 80000 }], circ = [{ x: 30000, z: 30000, r: 50000 }];
+  const a = sectorHexApothem(pts, circ), R = hexRadiusOfApothem(a);
+  const inAll = pts.every((p) => insideHex(p.x, p.z, 0, 0, R)) &&
+    [0, 1, 2, 3, 4, 5, 6, 7].every((k) => insideHex(30000 + 50000 * Math.cos(k * Math.PI / 4), 30000 + 50000 * Math.sin(k * Math.PI / 4), 0, 0, R));
+  check(inAll && a < 150000 * 1.0 * 1.2, `sector hexagon contains every point and radar circle (apothem ${Math.round(a / 1000)} km)`);
+  check(sectorHexApothem([], []) === 60000 && sectorHexApothem([{ x: 1000, z: 0 }]) === 60000, "sector hexagon never below the 60 km minimum");
+}
+const { STRINGS } = await import("../web/map-strings.js");
+const ek = Object.keys(STRINGS.en), hk = Object.keys(STRINGS.hu);
+check(ek.length === hk.length && ek.every((k) => hk.includes(k)) && STRINGS.hu["map.chip.ownerless"] === "Gazdátlan hajók",
+      `map strings: en/hu have the same ${ek.length} keys (incl. the ownerless texts)`);
+
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

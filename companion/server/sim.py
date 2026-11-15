@@ -333,6 +333,13 @@ class World:
             o.update(code=self._code(), p=pur, ic=SHIP_ICONS.get((cls, pur)), hull=r.randint(30, 100), vx=r.uniform(-300, 300), vz=r.uniform(-300, 300))
             if r.random() < 0.02:
                 o["mt"] = True
+        # abandoned (claimable) ships: owner faction "ownerless", standing still (the real game sends
+        # e.g. {"c": "ship_m", "o": "ownerless", "n": "Baku", "ic": "ship_m_transporter_01"})
+        for _ in range(r.randint(1, 3)):
+            cls = r.choice(["ship_s", "ship_m", "ship_l"])
+            pur = r.choice(["fight", "trade", "mine"])
+            o = self._obj(sid, cls, "ownerless", r.choice(NAMES), r.uniform(-60000, 60000), r.uniform(-60000, 60000))
+            o.update(code=self._code(), p=pur, ic=SHIP_ICONS.get((cls, pur)), hull=r.randint(10, 60), yaw=r.uniform(-3.1, 3.1))
         for _ in range(r.randint(2, 8)):
             cls = r.choice(["satellite", "navbeacon", "resourceprobe", "lockbox", "collectablewares", "mine"])
             own = cls in ("satellite", "resourceprobe", "navbeacon") and r.random() < 0.6

@@ -187,7 +187,8 @@
     "title": "Search and jump",
     "desc": "Type a name or ID, Enter jumps to it on the map",
     "more": "+{{n}} more – refine the search",
-    "back_ship": "Back to my ship (follow)"
+    "back_ship": "Back to my ship (follow)",
+    "ownerless": "Ownerless ships (can be claimed)"
   },
   "hk": {
     "panel_next": "next view",
@@ -275,7 +276,10 @@
     "empty_scan": "No sector scan of this sector yet.",
     "gate": "Jump gate",
     "highway": "Superhighway",
-    "ownerless": "ownerless"
+    "ownerless": "ownerless",
+    "f_ownerless": "Ownerless",
+    "ownerless_badge": "Ownerless",
+    "ownerless_tip": "Abandoned ship nobody owns – can be claimed"
   },
   "info": {
     "no_selection": "Nothing selected",
@@ -288,6 +292,8 @@
     "target": "Target",
     "mission": "Mission",
     "owner": "Owner",
+    "status": "Status",
+    "ownerless_claim": "Ownerless – can be claimed",
     "own_ships": "Own ships",
     "own_stations": "Own stations",
     "resources": "Resources",

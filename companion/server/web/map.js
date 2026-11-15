@@ -17,7 +17,7 @@ import { loadSettings, saveSettings, factionColor } from "./util.js";
 import { clampScale, wheelFactor, applyBias, zoomAt, fitScale, pinchFactor } from "./camera.js";
 import { iconEl } from "./icons.js";
 import { objColor, holo, rgb, iconFor, iconSize, isShip, drawIcon, hexCellsInRange, radarCell, route,
-         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, CLUSTER_R } from "./mapstyle.js";
+         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, isOwnerlessShip, OWNERLESS_COLOR, sectorHexApothem, hexRadiusOfApothem, hexPoints, CLUSTER_R } from "./mapstyle.js";
 import { withFallback } from "./map-strings.js";
 
 const HEX = CLUSTER_R;           // cluster grid edge length (vanilla menu_mapeditor.lua:163)
@@ -26,7 +26,7 @@ const GRID_STEPS = [500, 1000, 2000, 5000, 10000, 20000, 25000, 50000, 100000, 2
 const FONT = '"Segoe UI", "Inter", system-ui, sans-serif';
 // the v1.1 defaults, unchanged (stored settings are not migrated)
 const DEFAULTS = { labels: "auto", npc: true, grid: true, mini: true, radar: true, lines: true, hull: true,
-                   factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false };
+                   factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false, ownerless: true };
 
 export function migrateMapSettings(raw) {
   const cfg = Object.assign({}, DEFAULTS, raw || {});
@@ -39,6 +39,7 @@ export function drawLayer(o) {
   const c = (o && (o.c || o.class)) || "";
   if (c === "station") return 4;
   if (c === "gate" || c === "highwayentrygate") return 3;
+  if (isOwnerlessShip(o)) return 2.5;          // abandoned ships: above ordinary ships, below gates/stations
   if (isShip(o)) return o.pl ? 2 : 1;
   return 0;
 }
@@ -224,7 +225,7 @@ export class MapView {
     } });
     this.layersBtn = this.mk("button", { class: "chip layers-btn", onclick: () => this.togglePop("layers") });
     this.layers = this.mk("div", { class: "layers", hidden: true },
-      chip("radar"), chip("lines"), chip("npc"), chip("hull"), chip("factioncol"), chip("rotate"), chip("grid"), chip("mini"),
+      chip("radar"), chip("lines"), chip("npc"), chip("ownerless"), chip("hull"), chip("factioncol"), chip("rotate"), chip("grid"), chip("mini"),
       this.lblBtn, chip("legend"));
     this.legendBox = this.mk("div", { class: "maplegend2", hidden: true });
     this.followBadge = this.mk("div", { class: "followbadge" });
@@ -561,6 +562,15 @@ export class MapView {
       drawIcon(cv.getContext("2d"), ic, 11, 11, 20, holo(th, ck));
       box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend." + label))));
     }
+    {
+      const cv = this.mk("canvas", { width: 34, height: 34 });
+      cv.style.width = "22px"; cv.style.height = "22px";
+      const g2 = cv.getContext("2d");
+      g2.scale(34 / 30, 34 / 30);
+      drawIcon(g2, "ship_s_trade_01", 15, 15, 11, holo(th, "friendcolor"));
+      ownerlessMark(g2, 15, 15, 11, 0, null, true);
+      box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", { style: { color: rgb(OWNERLESS_COLOR) } }, T("map.legend.ownerless"))));
+    }
     box.append(this.mk("span", { class: "lgi" }, this.mk("span", { class: "swatch radar" }), this.mk("span", {}, T("map.legend.radar"))));
     this.legendBox.replaceChildren(this.mk("div", { class: "lgtitle" }, T("map.legend.title") + (th && !th.sim ? T("map.legend.gameColors") : T("map.legend.approx"))), box);
   }
@@ -598,7 +608,7 @@ export class MapView {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (!drag.moved && Math.abs(dx) + Math.abs(dy) <= 4) return;
-      drag.moved = true;
+      drag.moved = true; this.dragging = true;
       drag.x = e.clientX; drag.y = e.clientY;
       this.toManual();
       const v = this.v();
@@ -610,7 +620,7 @@ export class MapView {
       if (drag && drag.moved) this.saveCam();
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinch = null;
-      if (!pointers.size) { drag = null; cv.classList.remove("dragging"); }
+      if (!pointers.size) { drag = null; this.dragging = false; cv.classList.remove("dragging"); }
     };
     cv.addEventListener("pointerup", end);
     cv.addEventListener("pointercancel", end);
@@ -965,6 +975,11 @@ export class MapView {
     const has = (o) => o && o.x !== null && o.x !== undefined;
     if (this.cam === "fit") {
       for (const o of objs) if (has(o)) pts.push([o.x, o.z]);
+      // "fit whole sector" frames the sector's hexagon border
+      if (sid) {
+        const st = this.sectorHexTarget(String(sid), objs, !this.viewSector);
+        for (const [x, z] of hexPoints(0, 0, hexRadiusOfApothem(st.target))) pts.push([x, z]);
+      }
       if (!this.viewSector && has(p)) pts.push([p.x, p.z]);
     } else if (this.cam === "focus") {
       const f = objs.find((o) => o.id === this.focusObj && has(o));
@@ -1091,6 +1106,7 @@ export class MapView {
     this.drawBackground(g);
     if (this.cfg.radar) this.drawRadar(g, objs, inPlayer);
     if (this.cfg.grid) this.drawGrid(g);
+    this.drawSectorBorder(g, sid, sec, objs, inPlayer);
     // sector centre (subtle cross, as the game's ecliptic centre)
     const [ox, oy] = this.toScreen(0, 0);
     g.strokeStyle = "rgba(140,190,255,0.35)"; g.lineWidth = 1;
@@ -1112,19 +1128,30 @@ export class MapView {
       .map((o, i) => [o, drawLayer(o), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map((x) => x[0]);
     this.hit = [];
     const labels = [];
-    let nNpc = 0, nOwn = 0, nHostile = 0;
+    let nNpc = 0, nOwn = 0, nHostile = 0, nOwnerless = 0;
     const many = sorted.length > 250;
+    const still = !!(this.win.matchMedia && this.win.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    const reserved = [];          // ownerless badges: labels keep clear of them
+    this.lastOwnerless = [];
     for (const o of sorted) {
       if (p && inPlayer && o.id === p.id) continue;
       const ship = isShip(o);
-      if (ship && !o.pl && !this.cfg.npc && o.id !== sel) continue;
+      const ownerless = isOwnerlessShip(o);
+      const mark = ownerless && this.cfg.ownerless !== false;
+      if (ship && !o.pl && !this.cfg.npc && o.id !== sel && !mark) continue;
       const [x, y] = this.toScreen(o.x, o.z);
       if (x < -40 || y < -40 || x > this.w + 40 || y > this.h + 40) continue;
       if (ship) { if (o.pl) nOwn++; else nNpc++; if (o.h) nHostile++; }
+      if (ownerless) nOwnerless++;
       const col = this.colorOf(o);
       const size = iconSize(o, scale);
       const rot = this.cfg.rotate && ship && typeof o.yaw === "number" ? this.heading(o.yaw) : 0;
       drawIcon(g, iconFor(o), x, y, size, col, rot);
+      if (mark) {
+        const bb = ownerlessMark(g, x, y, size, now, T("map.ownerless.badge"), still);
+        reserved.push(bb);
+        this.lastOwnerless.push({ id: o.id, x, y, badge: bb });
+      }
       const important = o.id === sel || (tg && tg.id === o.id) || (this.hover && this.hover.id === o.id);
       if (this.cfg.hull && o.hull !== undefined && o.hull !== null && (ship || o.c === "station") && (important || nameZoom || (!many && o.pl))) {
         hullBar(g, x, y - size / 2 - 5, Math.max(14, size * 0.9), o.hull, o.shield, th);
@@ -1134,10 +1161,14 @@ export class MapView {
         if (pu < now) this.pulses.delete(o.id);
         else { const ph = (now % 1000) / 1000; g.strokeStyle = `rgba(255,70,70,${1 - ph})`; g.lineWidth = 2; g.beginPath(); g.arc(x, y, size / 2 + 4 + ph * 18, 0, Math.PI * 2); g.stroke(); }
       }
-      this.hit.push({ x, y, r: size / 2 + 3, o });
+      this.hit.push({ x, y, r: size / 2 + (mark ? 9 : 3), o });
       const wantLabel = lblMode === "all" || important ||
         (lblMode === "auto" && (nameZoom || (stationZoom && (o.c === "station" || o.c === "gate" || o.c === "highwayentrygate"))));
-      if (o.c === "gate" || o.c === "highwayentrygate") {
+      if (mark) {
+        // abandoned ship: its name always shown, placed like gate names (never dropped)
+        labels.push({ x, y: y + size / 2 + 16, iy: y, isz: size + 14, gate: true, ownerless: true, col: OWNERLESS_COLOR, pri: important ? 0 : 0.4,
+                      text: o.n || this.className(o.c) || T("map.unknown") });
+      } else if (o.c === "gate" || o.c === "highwayentrygate") {
         // M8: jump gate / accelerator / superhighway names (= destination sector) at every zoom level
         const dn = o.ds ? this.sectorName(o.ds) : null;
         labels.push({ x, y: y + size / 2 + 12, iy: y, isz: size, gate: true, col, pri: important ? 0 : 0.5,
@@ -1158,6 +1189,7 @@ export class MapView {
       const pw = g.measureText(T("map.you", { name: p.name || "" })).width;
       taken.push([px - 18, py - 20, px + 24 + pw, py + 18]);
     }
+    for (const b of reserved) taken.push(b);
     g.font = `12px ${FONT}`;
     this.lastLabels = [];
     for (const L of labels) {
@@ -1174,7 +1206,7 @@ export class MapView {
         g.fillStyle = "rgba(2,6,14,0.62)";
         roundRect(g, box[0], box[1], box[2] - box[0], box[3] - box[1], 3); g.fill();
         text(g, L.text, pos[0], pos[1], rgb(L.col), 12, true);
-        this.lastLabels.push({ text: L.text, x: pos[0], y: pos[1], gate: true });
+        this.lastLabels.push({ text: L.text, x: pos[0], y: pos[1], gate: !L.ownerless, ownerless: !!L.ownerless });
         continue;
       }
       const box = [L.x - w / 2 - 2, L.y - 11, L.x + w / 2 + 2, L.y + 3];
@@ -1208,19 +1240,69 @@ export class MapView {
     }
     this.drawScale(g);
     if (this.cfg.mini) this.drawMini(g, sid);
-    this.drawInfo(sec, sc, nOwn, nNpc, nHostile);
+    if (this.lastOwnerless.length && !still) this.dirty = true;     // the marker's slow pulse
+    this.drawInfo(sec, sc, nOwn, nNpc, nHostile, nOwnerless);
   }
 
-  drawInfo(sec, sc, nOwn, nNpc, nHostile) {
+  // the sector's hexagon border (see mapstyle.sectorHexApothem: an approximation of the game's frame).
+  // It only grows (per sector), eases towards a larger size and holds still while the user drags.
+  sectorHexTarget(sid, objs, inPlayer) {
+    const pts = objs.filter((o) => o.x !== null && o.x !== undefined).map((o) => ({ x: +o.x, z: +o.z }));
+    const p = this.S.player && this.S.player.object;
+    if (inPlayer && p && p.x !== null && p.x !== undefined) pts.push({ x: +p.x, z: +p.z });
+    const a = sectorHexApothem(pts, this.radarSources(objs, inPlayer));
+    this.secHex = this.secHex || new Map();
+    const st = this.secHex.get(sid) || { target: 0, shown: 0 };
+    st.target = Math.max(st.target, a);
+    if (!st.shown) st.shown = st.target;
+    this.secHex.set(sid, st);
+    return st;
+  }
+  drawSectorBorder(g, sid, sec, objs, inPlayer) {
+    if (!sid) return;
+    const st = this.sectorHexTarget(String(sid), objs, inPlayer);
+    if (st.shown < st.target && !this.dragging) {
+      st.shown += Math.max((st.target - st.shown) * 0.15, 1);
+      if (st.shown > st.target) st.shown = st.target;
+      this.dirty = true;
+    }
+    const R = hexRadiusOfApothem(st.shown);
+    const pts = hexPoints(0, 0, R).map(([x, z]) => this.toScreen(x, z));
+    const owner = sec && !sec.provisional ? sec.owner : null;
+    // owner colour: the player's map colour for own sectors, a light grey for unowned (ownerless) ones
+    const col = owner === "player" ? rgb(holo(this.S.theme, "playercolor"))
+      : (!owner || owner === "ownerless") ? "rgb(170,180,192)" : factionColor(owner, this.S.factions);
+    const path = new Path2D();
+    pts.forEach(([x, y], i) => (i ? path.lineTo(x, y) : path.moveTo(x, y)));
+    path.closePath();
+    // outside the sector: black (like the game)
+    g.save();
+    const out = new Path2D();
+    out.rect(-10, -10, this.w + 20, this.h + 20);
+    out.addPath(path);
+    g.fillStyle = "rgba(0,0,0,0.72)";
+    g.fill(out, "evenodd");
+    // soft inner glow + a constant-width bright border in the owner's colour
+    g.save(); g.clip(path);
+    g.strokeStyle = col;
+    for (const [w, a] of [[22, 0.07], [12, 0.12], [6, 0.22]]) { g.globalAlpha = a; g.lineWidth = w; g.stroke(path); }
+    g.restore();
+    g.globalAlpha = 1; g.lineWidth = 3; g.strokeStyle = col; g.lineJoin = "round"; g.stroke(path);
+    g.restore();
+    this.lastSectorHex = { sid: String(sid), apothem: st.shown, target: st.target, R, color: col, owner };
+  }
+
+  drawInfo(sec, sc, nOwn, nNpc, nHostile, nOwnerless = 0) {
     const T = this.t;
     const res = sec && sec.res ? sec.res.map((r) => r.w).join(", ") : "";
     const pending = sec && sec.provisional;
     const owner = sec && !pending ? this.factionName(sec.owner) : T("map.none");
-    const key = [sec && sec.id, sec && sec.name, pending, owner, nOwn, nNpc, nHostile, sc && sc.hidden, res, sc && Math.round(Date.now() / 5000)].join("|");
+    const key = [sec && sec.id, sec && sec.name, pending, owner, nOwn, nNpc, nHostile, nOwnerless, sc && sc.hidden, res, sc && Math.round(Date.now() / 5000)].join("|");
     if (key === this._infoKey) return;
     this._infoKey = key;
     let counts = T("map.info.counts", { own: nOwn, npc: nNpc });
     if (nHostile) counts += T("map.info.hostile", { n: nHostile });
+    if (nOwnerless) counts += T("map.info.ownerless", { n: nOwnerless });
     if (sc && sc.hidden) counts += T("map.info.hidden", { n: sc.hidden });
     if (this._pill) {              // compact container: one line, the full text as tooltip
       const full = [sec ? sec.name : T("map.none"), pending ? T("map.info.pending") : owner, counts, res ? T("map.info.res", { list: res }) : ""].filter(Boolean).join(" · ");
@@ -1540,7 +1622,7 @@ export class MapView {
       if (s) { o = { id: "s" + s.id }; label = s.name + " · " + this.factionName(s.owner); }
     } else {
       o = this.pick(sx, sy);
-      if (o) label = (o.n || this.className(o.c) || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? T("map.tip.own") : o.o ? " · " + this.factionName(o.o) : "") +
+      if (o) label = (o.n || this.className(o.c) || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? T("map.tip.own") : isOwnerlessShip(o) ? T("map.tip.ownerless") : o.o ? " · " + this.factionName(o.o) : "") +
         (o.hull !== undefined && o.hull !== null ? T("map.tip.hull", { n: this.fmtNum(o.hull) }) : "");
     }
     const id = o ? o.id : null;
@@ -1565,6 +1647,30 @@ export class MapView {
 }
 
 // ---------------------------------------------------------------- drawing helpers
+// Abandoned (ownerless) ship marker: a dark halo + dashed chartreuse ring that slowly turns and
+// breathes (still with prefers-reduced-motion) and an "abandoned" badge right of it. Unlike the
+// player's solid white rings, the white selection brackets and amber mission colour. Returns the
+// badge box [x0, y0, x1, y1] so labels keep clear of it.
+export function ownerlessMark(g, x, y, size, t, badge, still = false) {
+  const r = size / 2 + 7 + (still ? 0 : 1.5 * Math.sin(t / 450));
+  g.save();
+  g.lineWidth = 4.5; g.strokeStyle = "rgba(0,0,0,0.75)";
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.stroke();
+  g.setLineDash([5, 3.5]); g.lineDashOffset = still ? 0 : -((t / 110) % 17);
+  g.lineWidth = 2.2; g.strokeStyle = rgb(OWNERLESS_COLOR); g.stroke();
+  g.setLineDash([]);
+  let box = [x + r + 2, y - 7, x + r + 2, y + 7];
+  if (badge) {
+    g.font = `bold 9px ${FONT}`;
+    const w = g.measureText(badge).width + 8, bx = x + r + 3, by = y - 6;
+    g.fillStyle = rgb(OWNERLESS_COLOR); roundRect(g, bx, by, w, 12, 6); g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.85)"; g.lineWidth = 1; g.stroke();
+    g.fillStyle = "#0b1600"; g.fillText(badge, bx + 4, by + 9);
+    box = [bx - 1, by - 1, bx + w + 1, by + 13];
+  }
+  g.restore();
+  return box;
+}
 function text(g, s, x, y, color, size = 11, shadow = false) {
   g.font = `${size}px ${FONT}`;
   if (shadow) { g.fillStyle = "rgba(0,0,0,0.85)"; g.fillText(s, x + 1, y + 1); }

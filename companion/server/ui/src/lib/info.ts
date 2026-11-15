@@ -3,6 +3,7 @@
 // only produced when it has a real value — the old shell printed "null" for missing sections
 // (Element.replaceChildren(null) stringifies) and empty bars for objects without hull/shield.
 import { joinParts, pct01, text, toNum, type Fmt } from "./format";
+import { isOwnerlessShip } from "./objects";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = Record<string, any>;
@@ -145,7 +146,7 @@ export function buildInfo(ctx: InfoCtx, sel: Any | null, det: Any | null | undef
   const cls: string = String(o.c || o.class || "");
   const isShip = SHIPISH(cls);
   const own = !!(o.pl || o.k || o.o === "player");
-  const ownerName = own ? t("info.own") : (det && text(det.on)) || (o.o ? factionName(o.o) : null);
+  const ownerName = own ? t("info.own") : (det && text(det.on)) || (o.o === "ownerless" ? t("objects.ownerless") : o.o ? factionName(o.o) : null);
   const orderName = text(base.k ? base.on : null) || (det ? text(det.oname) : null);
   m.kind = "obj";
   m.title = text(o.n) ?? text(o.name) ?? t("info.object");
@@ -155,6 +156,7 @@ export function buildInfo(ctx: InfoCtx, sel: Any | null, det: Any | null | undef
   push(m.rows, "class", t("info.class"), txt(cls ? (t("class." + cls) !== "class." + cls ? t("class." + cls) : cls) : null));
   push(m.rows, "sector", t("info.sector"), txt(sid ? sectorName(sid) : null));
   push(m.rows, "owner", t("info.owner"), txt(ownerName));
+  if (isOwnerlessShip({ ...o, c: cls })) push(m.rows, "ownerless", t("info.status"), txt(t("info.ownerless_claim"), "pos"));
   const rel = toNum(o.r);
   if (rel !== null && !own) push(m.rows, "relation", t("info.relation"), txt(f.signed(rel), rel < 0 ? "neg" : rel > 0 ? "pos" : undefined));
   const h = barRow("hull", t("info.hull"), o.hull, cls, "hull"); if (h) m.rows.push(h);

@@ -10,9 +10,9 @@ import { useListNav } from "@/core/listnav";
 import { mapSid } from "@/core/mapHost";
 import { factionName, S, sectorName, select, type Any } from "@/core/store";
 import { toNum } from "@/lib/format";
+import { isOwnerlessShip, OBJ_FILTERS, objMatches, OWNERLESS_CSS } from "@/lib/objects";
 import { cn } from "@/lib/utils";
 
-const FILTERS = ["all", "ships", "stations", "gates", "own", "hostile"] as const;
 
 export function ObjectsPanel() {
   const { t, f } = useT();
@@ -31,16 +31,7 @@ export function ObjectsPanel() {
   const p = S.player && S.player.object;
   const same = !!(p && S.player!.sector && S.player!.sector.id === sid);
   const q = (cfg.q || "").trim().toLowerCase();
-  const rows = all.filter((o) => {
-    const ship = o.c && String(o.c).startsWith("ship");
-    if (cfg.f === "ships" && !ship) return false;
-    if (cfg.f === "stations" && o.c !== "station") return false;
-    if (cfg.f === "gates" && o.c !== "gate" && o.c !== "highwayentrygate") return false;
-    if (cfg.f === "own" && !o.pl) return false;
-    if (cfg.f === "hostile" && !(o.h || o.e)) return false;
-    if (q && !`${o.n || ""} ${o.code || ""} ${factionName(o.o)}`.toLowerCase().includes(q)) return false;
-    return true;
-  });
+  const rows = all.filter((o) => objMatches(o, cfg.f, q, factionName(o.o)));
   const dOf = (o: Any): number | null => {
     const ox = toNum(o.x), oz = toNum(o.z);
     if (ox === null || oz === null) return null;
@@ -67,7 +58,7 @@ export function ObjectsPanel() {
           <Input type="search" value={cfg.q} onChange={(e) => setCfg({ q: e.target.value })} placeholder={t("objects.filter")} className="h-7 pl-7 text-xs" />
         </div>
         <FilterBar value={cfg.f} onChange={(v) => setCfg({ f: v })} label={t("objects.filter")} wideAt="36rem"
-          options={FILTERS.map((k) => ({ value: k, label: t("objects.f_" + k) }))} className="w-28 min-w-0 shrink-0 @[36rem]:w-auto @[36rem]:flex-1" />
+          options={OBJ_FILTERS.map((k) => ({ value: k, label: t("objects.f_" + k) }))} className="w-28 min-w-0 shrink-0 @[36rem]:w-auto @[36rem]:flex-1" />
       </div>
       <div className="shrink-0 truncate px-3 pt-1.5 pb-1 text-xs text-muted-foreground" title={summary}>{summary}</div>
       <FitScroll ref={box} deps={shown.length}>
@@ -76,6 +67,7 @@ export function ObjectsPanel() {
           const dest = o.c === "gate" || o.c === "highwayentrygate" ? " → " + (o.ds ? sectorName(o.ds) : "?") : "";
           const cls = t("class." + o.c, { defaultValue: "" });
           const name = (o.n || cls || "?") + dest;
+          const abandoned = isOwnerlessShip(o);
           const owner = o.pl ? t("objects.own") : ((S.factions[o.o] || {}).sn || (o.o === "ownerless" ? t("objects.ownerless") : o.o) || "");
           return (
             <div key={o.id} data-key={String(o.id)} onClick={() => select({ kind: "obj", id: String(o.id), from: "objects", obj: o, sid })}
@@ -83,7 +75,13 @@ export function ObjectsPanel() {
                 "@[22rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_auto] @[30rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto] @[38rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto_6.5rem]",
                 (String(o.id) === selId || String(o.id) === cur) && "bg-primary/15 shadow-[inset_2px_0_0_var(--primary)]")}>
               <span className="flex justify-center"><GameIcon o={o} size={18} /></span>
-              <span className="truncate font-medium" style={{ color: objColorCss(o) }} title={name}>{name}</span>
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate font-medium" style={{ color: objColorCss(o) }} title={name}>{name}</span>
+                {abandoned && (
+                  <span data-badge="ownerless" title={t("objects.ownerless_tip")} style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}
+                    className="shrink-0 rounded-full border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold uppercase">{t("objects.ownerless_badge")}</span>
+                )}
+              </span>
               <span className="hidden truncate text-xs text-muted-foreground @[22rem]:block">{cls}</span>
               <span className="hidden truncate text-xs text-muted-foreground @[30rem]:block" title={owner}>{owner}</span>
               <span className="text-right text-xs tabular-nums text-foreground/80">{f.dist(d) ?? ""}</span>

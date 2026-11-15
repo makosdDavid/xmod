@@ -9,6 +9,7 @@ import { PRESETS } from "@/core/layout";
 import { getMap } from "@/core/mapHost";
 import { S, sectorName, select, type Any } from "@/core/store";
 import { applyPreset, setPalette, setView, useUI, VIEWS, type ViewId } from "@/core/ui";
+import { isOwnerlessShip, OWNERLESS_CSS, wantsOwnerless } from "@/lib/objects";
 
 const LIMIT = 40;
 
@@ -35,6 +36,11 @@ export function CommandPalette() {
   const objs: { o: Any; sid: string }[] = [];
   if (open && ql) for (const [sid, sc] of Object.entries(S.scans)) for (const o of (sc.objs || []) as Any[]) {
     if (!own.has(String(o.id)) && hit(`${o.n || ""} ${o.code || ""}`)) objs.push({ o, sid });
+  }
+  // "ownerless" / "gazdátlan" / "abandoned"…: every abandoned ship of the scanned sectors
+  const abandoned: { o: Any; sid: string }[] = [];
+  if (open && wantsOwnerless(ql)) for (const [sid, sc] of Object.entries(S.scans)) for (const o of (sc.objs || []) as Any[]) {
+    if (isOwnerlessShip(o)) abandoned.push({ o, sid });
   }
   const sectors = open ? [...S.sectors.values()].filter((s) => hit(`${s.name || ""} ${s.cname || ""}`)) : [];
   const views = [...VIEWS.map((v) => ({ id: v.id as ViewId, key: v.key })), { id: "hotkeys" as ViewId, key: "?" }].filter((v) => hit(t("views." + v.id)));
@@ -67,6 +73,18 @@ export function CommandPalette() {
               </CommandItem>
             ))}
             {more(stations.length)}
+          </CommandGroup>
+        )}
+        {abandoned.length > 0 && (
+          <CommandGroup heading={t("palette.ownerless")}>
+            {abandoned.slice(0, LIMIT).map(({ o, sid }) => (
+              <CommandItem key={"ab" + sid + o.id} value={"ab-" + sid + "-" + o.id} onSelect={() => jumpObj(o, sid)}>
+                <GameIcon o={o} size={16} /><span className="truncate">{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
+                <span className="shrink-0 rounded-full border border-dashed px-1.5 text-[0.65rem] font-semibold uppercase" style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}>{t("objects.ownerless_badge")}</span>
+                <CommandShortcut className="tracking-normal">{sectorName(sid)}</CommandShortcut>
+              </CommandItem>
+            ))}
+            {more(abandoned.length)}
           </CommandGroup>
         )}
         {objs.length > 0 && (
