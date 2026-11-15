@@ -8,43 +8,37 @@
 </head>
 <body data-state="noserver">
 <header id="topbar">
-  <div class="tb-group brand"><span class="logo">X4</span><span>Companion</span></div>
-  <div class="tb-group"><span id="st-state" class="pill bad">indul…</span><span id="st-age" class="muted"></span></div>
-  <div class="tb-group"><span class="lbl">Kapitány</span><b id="st-name">–</b></div>
+  <div class="tb-brand"><span class="logo">X4</span><span class="brandname">Companion</span></div>
+  <span id="st-state" class="pill bad">indul…</span><span id="st-age" class="muted"></span>
+  <div class="tb-group grow-1"><span class="lbl">Kapitány</span><b id="st-name">–</b></div>
   <div class="tb-group"><span class="lbl">Kredit</span><b id="st-money" class="money">–</b></div>
-  <div class="tb-group"><span class="lbl">Szektor</span><b id="st-sector">–</b></div>
-  <div class="tb-group ship"><span class="lbl">Hajó</span><b id="st-ship">–</b>
+  <div class="tb-group grow-1"><span class="lbl">Szektor</span><b id="st-sector">–</b></div>
+  <div class="tb-group ship grow-2"><span class="lbl">Hajó</span><b id="st-ship">–</b>
     <span class="bars"><span id="st-hull" class="bar hull" title="burkolat"><span></span></span><span id="st-shield" class="bar shield" title="pajzs"><span></span></span></span>
-    <span id="st-speed" class="muted">–</span><span id="st-where" class="where"></span></div>
-  <div class="tb-group target"><span class="lbl">Célpont</span><span id="st-target" class="muted">–</span></div>
-  <div class="tb-group mission"><span id="st-mission" class="muted"></span></div>
+    <span id="st-speed" class="muted num">–</span></div>
+  <div class="tb-group target grow-1"><span class="lbl">Célpont</span><span id="st-target" class="muted">–</span></div>
   <div class="tb-spacer"></div>
-  <div class="tb-group"><span class="lbl">Idő</span><span id="st-time">–</span></div>
-  <div class="tb-group">
-    <button id="btn-auto" title="Kijelző-üzemmód: követés, automatikus nézetváltás eseményre">Auto</button>
-    <button id="btn-font" title="Betűméret">A±</button>
-    <button id="btn-control" title="Parancsok küldése a játéknak (a mod engedélyezőlistája szerint)">Vezérlés engedélyezése</button>
+  <div class="tb-group"><span id="st-time" class="muted">–</span></div>
+  <div class="tb-group tb-buttons">
+    <button id="btn-help" class="icon-btn" title="Gyorsgombok és billentyűk (?)" aria-label="Súgó"></button>
+    <button id="btn-font" class="icon-btn" title="Betűméret">A±</button>
+    <button id="btn-control" title="Parancsok küldése a játéknak (a mod engedélyezőlistája szerint)">Vezérlés</button>
   </div>
 </header>
+<nav id="nav" aria-label="Nézetek">
+  <div id="views" class="views" role="tablist"></div>
+  <div class="nav-spacer"></div>
+  <div class="nav-tools">
+    <span id="st-where" class="where muted"></span>
+    <div class="menu" id="menu-modules"><button class="menu-btn" title="Modulok megjelenítése / elrejtése">Modulok ▾</button><div class="menu-pop" hidden></div></div>
+    <div class="menu" id="menu-layout"><button class="menu-btn" title="Elrendezés-sablonok">Elrendezés ▾</button><div class="menu-pop" hidden></div></div>
+  </div>
+</nav>
 <div id="alertbanner" hidden></div>
 <div id="stalebanner"></div>
-<main id="main">
-  <section id="map-panel" class="panel">
-    <div class="phead"><span class="ptitle">Térkép</span><span class="ptools"><button class="popout" data-panel="map" title="Külön ablakban (második monitor)">⧉</button></span></div>
-    <div class="pbody mapbody"></div>
-  </section>
-  <section id="property-panel" class="panel">
-    <div class="phead"><span class="ptitle">Tulajdon</span><span class="ptools"><button class="popout" data-panel="property" title="Külön ablakban">⧉</button></span></div>
-    <div class="pbody"></div>
-  </section>
-  <section id="side-panel" class="panel">
-    <div class="phead"><span id="sidetabs" class="tabs"></span><span class="ptools"><button class="popout" data-panel="side" title="Az aktuális fül külön ablakban">⧉</button></span></div>
-    <div id="side" class="pbody"></div>
-  </section>
-</main>
+<main id="work"></main>
 <aside id="drawer"></aside>
-<div id="toasts"></div>
-<footer id="help">egér: húzás/görgő · dupla katt: auto · <b>/</b> keresés · <b>g</b> galaxis/szektor · <b>+ −</b> zoom · <b>n</b> következő hajó · <b>Tab</b> panel · <b>Esc</b> bezár · játékban: Native Hotkey API gyorsgombok</footer>
+<div id="toasts" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

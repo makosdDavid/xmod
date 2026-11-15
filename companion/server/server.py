@@ -3,9 +3,9 @@
   game (x4_companion Lua) <--SN named pipe \\\\.\\pipe\\x4companion (duplex)--> this process
   this process <--HTTP / WebSocket on 127.0.0.1:8788--> browser dashboard (web/)
 
-Game -> server: one JSON object per line, "type" = hello | player | galaxy | gates | sector |
+Game -> server: one JSON object per line, "type" = hello | player | theme | galaxy | gates | sector |
   property | property_end | logbook | ticker | messages | missions | offers | factions |
-  economy | stats | hotkey | ack. Big lists arrive in parts (part/last) and are assembled here.
+  economy | stats | hotkey | details | ack. Big lists arrive in parts (part/last) and are assembled here.
 Server -> game: "cmd <seq> <name> [args]\\n" lines (allow-listed here AND in the mod).
 Server -> browser: {"type":"init", ...whole state...} on connect, then typed updates.
 Browser -> server: {"type":"control","enabled":bool} | {"type":"cmd","cmd":..,"args":[..],"id":n}
@@ -44,11 +44,13 @@ MAX_TICKER = 600
 # commands the server forwards (the mod has its own allow-list on top: CFG.allow)
 CMD_ARGS = {
     "openmap": 1, "select": 1, "target": 1, "guidance": 1, "guidance_end": 0,
-    "stop": 1, "flyto": 2, "watch": 1, "resync": 0, "reenable": 0,
+    "stop": 1, "flyto": 2, "watch": 1, "resync": 0, "reenable": 0, "details": 1,
 }
 NEED_CONTROL = {"openmap", "select", "target", "guidance", "guidance_end", "stop", "flyto"}
 ID_RE = re.compile(r"^\d{1,20}$")
 STATIC_RE = re.compile(r"^[a-zA-Z0-9_\-]+\.(js|css|html|svg|png|ico|json)$")
+ICON_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.png$")
+ICONS = DATA / "icons"          # exported locally by export_icons.py (game data, git-ignored)
 CTYPES = {"js": "text/javascript", "css": "text/css", "html": "text/html", "svg": "image/svg+xml",
           "png": "image/png", "ico": "image/x-icon", "json": "application/json"}
 
@@ -82,7 +84,7 @@ class Store:
     def __init__(self, static_map: dict | None) -> None:
         self.static = static_map
         self.hello: dict | None = None
-        self.latest: dict[str, dict] = {}         # player, missions, offers, factions, economy, messages, stats
+        self.latest: dict[str, dict] = {}         # player, theme, missions, offers, factions, economy, messages, stats
         self.galaxy: list | None = None
         self.galaxy_gen = None
         self.gates: list = []
@@ -144,7 +146,7 @@ class Store:
             self.hello = {k: msg.get(k) for k in ("mod", "ver", "session", "allow", "hotkeys", "loglib", "timer")}
             self.hello["at"] = time.time()
             out.append({"type": "hello", "hello": self.hello})
-        elif t in ("player", "missions", "offers", "factions", "economy", "messages", "stats"):
+        elif t in ("player", "theme", "missions", "offers", "factions", "economy", "messages", "stats"):
             msg["rx"] = time.time()
             self.latest[t] = msg
             out.append(msg)
@@ -226,7 +228,7 @@ class Client:
     """One browser tab. Latest-only types are coalesced; event types are queued in order."""
 
     LATEST = {"player", "stats", "status", "galaxy", "gates", "hwlinks", "missions", "offers", "factions",
-              "economy", "messages", "hello"}
+              "economy", "messages", "hello", "theme"}
 
     def __init__(self, ws: web.WebSocketResponse, origin_ok: bool) -> None:
         self.ws = ws
@@ -344,6 +346,12 @@ class Hub:
             if sec.get("id") != self.sector_key:
                 self.sector_key = sec.get("id")
                 log.info("player sector: %s (id %s)", sec.get("name"), sec.get("id"))
+        elif t == "details":
+            # read-only info-panel data: only to the tab that asked
+            owner = self.cmd_owner.get(int(msg.get("seq") or 0))
+            if owner is not None:
+                owner.push(msg)
+            return
         elif t == "ack":
             owner = self.cmd_owner.pop(int(msg.get("seq") or 0), None)
             log.info("ack #%s %s ok=%s %s", msg.get("seq"), msg.get("cmd"), msg.get("ok"), msg.get("msg"))
@@ -491,6 +499,25 @@ def make_app(hub: Hub, port: int) -> web.Application:
         ext = name.rsplit(".", 1)[1]
         return web.FileResponse(p, headers={"Cache-Control": "no-cache", "Content-Type": CTYPES[ext]})
 
+    async def icon(request: web.Request):
+        name = request.match_info["name"]
+        if not ICON_RE.match(name):
+            raise web.HTTPNotFound()
+        p = ICONS / name
+        if not p.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(p, headers={"Cache-Control": "max-age=3600", "Content-Type": "image/png"})
+
+    async def icon_index(_r):
+        p = ICONS / "index.json"
+        if not p.is_file():
+            return web.json_response({"count": 0, "icons": {}, "missing_export": True})
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except ValueError:
+            return web.json_response({"count": 0, "icons": {}, "bad_export": True})
+        return web.json_response({"count": d.get("count", 0), "size": d.get("size"), "icons": d.get("icons", {})})
+
     async def api_state(_r):
         snap = hub.store.snapshot()
         snap["status"] = hub.status()
@@ -539,6 +566,8 @@ def make_app(hub: Hub, port: int) -> web.Application:
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/favicon.ico", no_content)
+    app.router.add_get("/icons/index.json", icon_index)
+    app.router.add_get("/icons/{name}", icon)
     app.router.add_get("/{name}", static)
     return app
 
@@ -569,6 +598,8 @@ def load_static() -> dict | None:
 async def main_async(port: int, pipe_name: str) -> None:
     loop = asyncio.get_running_loop()
     hub = Hub(load_static())
+    if not (ICONS / "index.json").is_file():
+        log.warning("no %s (run export_icons.py) - the map uses drawn fallback icons", ICONS / "index.json")
     pipe = PipeServer(
         pipe_name,
         on_message=lambda line, cid: loop.call_soon_threadsafe(hub.on_pipe_line, line, cid),

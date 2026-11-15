@@ -1,23 +1,20 @@
-# Első éles próba – 10 perc (a legkockázatosabb feltevések elöl)
+# Első éles próba v1.1 – 10 perc (a legkockázatosabb feltevések elöl)
 
-Előtte: `run.cmd` fut, böngésző a `http://127.0.0.1:8788` címen, a mod az `extensions\x4_companion\`-ben,
-Protected UI Mode ki. A játék indítása: `-debug all -logfile debuglog.txt` (a log miatt). Ha valami nem stimmel,
-ne javítsd kézzel: írd fel a sorszámot, és küldd a `logs\x4companion.log`-ot + a `debuglog.txt`-t.
+Előtte: a szerver fut (`run.cmd`), böngésző a `http://127.0.0.1:8788` címen, a mod (v110) az `extensions\x4_companion\`-ben,
+a térképikonok exportálva (`uv run --with pillow==11.3.0 python export_icons.py`, ~4 mp). Protected UI Mode ki.
+A játék indítása `-debug all -logfile debuglog.txt`. Ha valami nem stimmel, ne javítsd kézzel: sorszám + `logs\x4companion.log` + `debuglog.txt`.
 
 | # | Mit nézz | Rendben, ha | Ha nem |
 |---|---|---|---|
-| 1 | Mentés betöltése után 10 mp; felső sáv állapota | „élő”, a kapitánynév és a kredit látszik | debuglog: `x4_companion` sorok; ha „SN Pipes API not available” → SN nincs betöltve |
-| 2 | Állapot fül → „Kikapcsolt források” | „nincs” (vagy csak `p.speed`) | a felsorolt forrásnevek = mely játékfüggvény nem működik így |
-| 3 | Állapot fül → „Híd költsége / képkocka” és a csatornatábla | átlag < 0,5 ms, egyik csatorna sem „KI” | jegyezd fel a legdrágább csatornát (a híd magától ritkít) |
-| 4 | Galaxisnézet (`g` vagy gyorsgomb) vs. a játék térképe | **csak** a felfedezett szektorok; ismeretlen felé „?” | képernyőkép mindkettőről – ez az ismertségi szabály próbája |
-| 5 | Szektornézet: a te jelölőd (sárga „TE”) a helyén; repülj egyenesen 10 mp-ig | a nyíl a haladás irányába mutat; Állapot → yaw-konvenció „a” vagy „b” | ha „c” vagy rossz irány: írd fel |
-| 6 | Szektornézet: más hajók száma vs. a játék térképe ugyanott | közel azonos; a radaron kívüli hajók nem látszanak | ha több látszik: a `CanViewLiveData` szabály mást jelent |
-| 7 | Állapot → „Kapuk (MD)” | „received”, a szám > 0; a szektorban kapuk a célszektor nevével | „requested” marad → az MD-fájl nem fut |
-| 8 | Hotkey Management → Hotkey Bindings: rendelj gombot a „Companion: galaxis / szektor nézet” és „Companion: következő saját hajó” sorhoz; nyomd meg repülés közben | a böngésző vált / kijelöl, felül „Gyorsgomb: …” | Állapot → „Gyorsgombok” sor (0 = nem regisztrált) |
-| 9 | Kattints a böngészőre (fókuszvesztés) 15 mp-ig | „játék háttérben”, szürke, adatok megmaradnak; Borderless + `-nocputhrottle` esetén tovább frissül (forrás: md) | exkluzív teljes képernyőn ez várt; a felület nem írhat „nincs kapcsolat”-ot |
-| 10 | Tulajdon panel: hajók száma vs. játék (Birtokok) | egyezik; a parancs oszlop értelmes | jegyezd fel a hiányzókat |
-| 11 | Napló: várj egy új bejegyzésre (vagy dokkolj) | megjelenik; riasztásnál piros felirat + villogó fül | |
-| 12 | Felső sáv „Vezérlés engedélyezése” → egy saját hajón „Megnyitás a játék térképén” | a játékban megnyílik a térkép a hajóra fókuszálva; felül „✓ openmap” | ha másik menü nyitva: üzenet, ez szándékos |
-| 13 | `/reloadui` a játék konzolján | 5 mp-en belül újra „élő” | |
-
-Utána: ugorj át egy kapun – a térkép magától az új szektorra és a hajóra áll.
+| 1 | Betöltés után 10 mp: felső sáv | „élő”, név, kredit | debuglog `x4_companion` sorai |
+| 2 | **Térkép (M a játékban) és a Companion egymás mellett, ugyanaz a szektor** | ugyanazok az ikonok (hajótípus, állomástípus, kapu, műhold), ugyanazok a színek (saját / semleges / ellenséges / támadó), a radar által látott terület világos | képernyőkép mindkettőről – ez a fő próba |
+| 3 | Jelmagyarázat (térkép → Rétegek → Jelmagyarázat) | a fejléc „(a játék színei)” – nem „közelítő” | „közelítő”: a `GetHoloMapColors` nem jött át → Állapot → kikapcsolt források (`th.holo`) |
+| 4 | Állapot → „Időmérés” | `qpc` vagy `qpc-k32`; a csatornatábla ms-oszlopai nem csupa 0 | `frame`: nincs óra – a „hívás/kocka” oszlop a mérés, ezt jegyezd fel |
+| 5 | Állapot → „Kapuk (MD)” | „MD N kaput talált, átvéve N” – a két szám egyezik, N > 100 | ha átvéve ≠ talált: írd fel mindkettőt |
+| 6 | Galaxis (2): kapukapcsolatok | a felfedezett szektorok közti összes kapuvonal megvan, ismeretlen felé „?” | képernyőkép |
+| 7 | Saját hajó kijelölése (lista / térkép) | Info: parancssor; a térképen szaggatott vonal a parancs céljáig | |
+| 8 | Útvonal kijelölése a játékban (Plot course) | sárgás szaggatott vonal a célig / a kapuig, galaxisban az útvonal | |
+| 9 | Nagyítás ki–be: görgő, +/−, gombok | mindkét irányba azonnal reagál | |
+| 10 | Hotkey Management → Hotkey Bindings: „Companion: következő nézet”, „vissza a térképre”, „nagyítás” | a böngésző vált, felül „Gyorsgomb: …” | Gyorsgombok nézet: hány regisztrált (17 kell; ha „pool full”, Hotkey Requests) |
+| 11 | Ugrás kapun | a térkép az új szektorra és a hajóra áll | |
+| 12 | `/reloadui` | 5 mp-en belül újra „élő” | |

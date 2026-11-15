@@ -1,13 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Gate enumeration for x4_companion: the UI Lua has no gate enumerator (no Get*Gates in the 9.00
-     ui cdefs), MD does. On request from Lua (AddUITriggeredEvent("x4companion", "gates")) this
-     raises one Lua event per active jump gate in the galaxy; Lua reads sector, destination and the player's knowledge itself (only known gates leave the game)
-     (GetComponentData(gate, "destination"), vanilla menu_map.lua:14893).
-     Patterns: event_ui_triggered round-trip (KNOWLEDGEBASE.md "event_ui_triggered round-trip");
-     find_gate with the 9.0-required space= : vanilla md\lib_generic.xml:1173 (active="true"),
-     md\scenario_tutorials.xml:4520 (space="player.galaxy" multiple="true");
-     raise_lua_event with a component param: vanilla md\cover.xml:397.
-     Instantiated cue, local variables only: nothing persists in the save. -->
+<!-- Gate enumeration for x4_companion (v1.1). The UI Lua has no gate enumerator (no Get*Gates in the
+     9.00 ui cdefs), MD does. On request from Lua (AddUITriggeredEvent("x4companion", "gates")) MD
+     finds every active jump gate and every superhighway entry gate of the galaxy, stores the two
+     lists on the player's blackboard and raises ONE Lua event; Lua reads both lists with
+     GetNPCBlackboard and deletes them with SetNPCBlackboard(..., nil). Lua decides per gate whether
+     the player knows it (only known gates leave the game).
+
+     Why not one raise_lua_event per gate (v1.0): in the real game only ONE gate arrived for the
+     whole galaxy - several raise_lua_event calls of the same name in one frame are not all
+     delivered with their own param. The blackboard hand-over is the pattern SirNukes' Mod Support
+     APIs use for exactly this reason (extensions\sn_mod_support_apis: hotkey/pipe APIs,
+     "md may have sent several of these events on the same frame ... the blackboard var has just
+     the args"; player.entity.$pipe_api_args written in MD, read + cleared in Lua with
+     GetNPCBlackboard / SetNPCBlackboard(L.player_id, ..., nil)).
+     Vanilla: find_gate with the 9.0-required space= : md\lib_generic.xml:1173,
+     find_highway_entry_gate superhighwaygate="true": md\lib_generic.xml:1174,
+     raise_lua_event: md\cover.xml:397.
+     The lists live on the blackboard only until Lua has read them (same frame); GateCleanup removes
+     them after 5 s in any case, so nothing stays in a save. -->
 <mdscript name="X4Companion_Gates" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
   <cues>
     <cue name="GateRequest" instantiate="true">
@@ -16,17 +26,20 @@
       </conditions>
       <actions>
         <find_gate name="$Gates" space="player.galaxy" active="true" multiple="true" />
-        <raise_lua_event name="'x4companion.gatesBegin'" param="$Gates.count" />
-        <do_all exact="$Gates.count" counter="$i">
-          <raise_lua_event name="'x4companion.gate'" param="$Gates.{$i}" />
-        </do_all>
-        <!-- superhighway entry gates: md\lib_generic.xml:1174 (superhighwaygate="true" active="true") -->
         <find_highway_entry_gate name="$Highways" superhighwaygate="true" space="player.galaxy" multiple="true" />
-        <do_all exact="$Highways.count" counter="$i">
-          <raise_lua_event name="'x4companion.hwgate'" param="$Highways.{$i}" />
-        </do_all>
-        <raise_lua_event name="'x4companion.gatesEnd'" param="$Gates.count" />
+        <set_value name="player.entity.$x4companion_gates" exact="$Gates" />
+        <set_value name="player.entity.$x4companion_hwgates" exact="$Highways" />
+        <raise_lua_event name="'x4companion.gates'" param="$Gates.count" />
       </actions>
+      <cues>
+        <cue name="GateCleanup">
+          <delay exact="5s" />
+          <actions>
+            <remove_value name="player.entity.$x4companion_gates" />
+            <remove_value name="player.entity.$x4companion_hwgates" />
+          </actions>
+        </cue>
+      </cues>
     </cue>
   </cues>
 </mdscript>

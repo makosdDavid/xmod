@@ -1,0 +1,6 @@
+# game data exported locally from the user's own installation - never commit or redistribute
+data/icons/
+data/static_map.json
+logs/
+.venv/
+__pycache__/

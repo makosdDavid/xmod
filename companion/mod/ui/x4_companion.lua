@@ -1,5 +1,10 @@
 --[[
-x4_companion.lua - X4 Companion bridge (v1).
+x4_companion.lua - X4 Companion bridge (v1.1).
+
+v1.1: map parity data (game icon id "ic" per object, own radar range "rr", mission-target flag,
+the game map's own colours in a "theme" message, plotted course + autopilot target, order queue
+points of a selected own ship), gate list via the player's blackboard (one event instead of one
+per gate), cost measurement that works without QueryPerformanceCounter (engine-call count "ops").
 
 Streams game data to the local companion server (tools\x4companion) as one JSON object per
 pipe message ("\n"-terminated) through the SirNukes Mod Support APIs named pipe
@@ -9,6 +14,7 @@ Channels (each its own interval, time-sliced, cost-measured, auto-throttled):
   player   0.25 s  name, credits, ship hull/shield/speed, target, sector, game time, paused
   galaxy   60 s    known clusters/sectors (offsets, owner, discovered resources) - sent on change
   gates    on demand  MD enumerates jump gates (md\x4_companion_gates.xml), Lua resolves them
+  theme    30 s    the game map's colours (GetHoloMapColors) + UI colour mappings, sent on change
   sector   1 s     objects the player sees in the current sector and in one "watched" sector
   property 4 s     all player ships + stations, diffed (only changed entries are sent)
   logbook  2 s     new logbook entries per category (incremental)
@@ -76,7 +82,7 @@ local C = rawget(_G, "__X4COMPANION_TEST_C") or ffi.C
 local K = ffi.C   -- Windows kernel32 (QueryPerformanceCounter) - not a game function
 
 local MOD = "x4_companion"
-local VERSION = "100"
+local VERSION = "110"
 
 -------------------------------------------------------------------------------
 -- ffi declarations: only what is still missing. Vanilla menus declare all of these
@@ -168,6 +174,8 @@ local CFG = {
     max_pending     = 24,              -- outstanding writes before droppable messages are dropped
     busy_reset      = 5.0,             -- a write callback missing this long -> assume lost
     frame_budget_ms = 0.5,             -- soft per-frame budget for all channel steps
+    frame_budget_ops = 160,            -- same budget in engine calls when no high-resolution clock exists
+    ops_per_ms = 150,                  -- budget conversion ms -> engine calls (~7 us per call, an estimate) for the ops-based throttle
     md_fallback     = 2,               -- MD ticks without a frame tick before MD drives a step
     src_consec      = 8,               -- a data source is switched off after N consecutive errors
     src_total       = 400,             --   ... or N errors in total
@@ -179,7 +187,7 @@ local CFG = {
     -- Commands the browser may send. Read-only/UI ones are on; orders are OFF by default -
     -- set to true here to allow them (the browser still needs its own "vezérlés" switch).
     allow = {
-        resync = true, watch = true, reenable = true,
+        resync = true, watch = true, reenable = true, details = true,
         openmap = true, select = true, target = true, guidance = true, guidance_end = true,
         stop = false, flyto = false,
     },
@@ -211,22 +219,50 @@ local function realtime()
     return 0
 end
 
-local qpc_buf, qpc_ms = nil, nil
-do
-    local ok = pcall(function()
+-- High-resolution clock for the cost measurement. v1.0 in the real game reported "timer clock" and
+-- every cost as 0: QueryPerformanceCounter was not reachable through ffi.C there, the UI
+-- environment has no os.clock, and GetCurRealTime() is constant within one frame (all deltas 0).
+-- Tried in this order, each inside pcall, the first one that really ticks wins:
+--   1. ffi.C.QueryPerformanceCounter   (LuaJIT: ffi.C includes kernel32 on Windows)
+--   2. ffi.load("kernel32").QueryPerformanceCounter   (explicit library handle)
+--   3. os.clock                         (only if the environment has it)
+--   4. none: "frame" - costs are then counted in engine calls (ops), see S() and schedule()
+local qpc_buf, qpc_ms, qpc_lib = nil, nil, nil
+local TIMER = "frame"
+local function tryQpc(lib)
+    local ok, good = pcall(function()
         local f = ffi.new("int64_t[1]")
-        if K.QueryPerformanceFrequency(f) ~= 0 and tonumber(f[0]) > 0 then
-            qpc_ms = 1000 / tonumber(f[0])
-            qpc_buf = ffi.new("int64_t[1]")
-        end
+        if lib.QueryPerformanceFrequency(f) == 0 or not (tonumber(f[0]) > 0) then return false end
+        local a, b = ffi.new("int64_t[1]"), ffi.new("int64_t[1]")
+        lib.QueryPerformanceCounter(a)
+        for _ = 1, 2000 do end
+        lib.QueryPerformanceCounter(b)
+        if not (tonumber(b[0]) >= tonumber(a[0])) or tonumber(a[0]) <= 0 then return false end
+        qpc_ms = 1000 / tonumber(f[0])
+        qpc_buf = ffi.new("int64_t[1]")
+        qpc_lib = lib
+        return true
     end)
-    if not ok then qpc_buf = nil end
+    return ok and good
 end
-local os_clock = (type(os) == "table") and os.clock or nil
+if rawget(_G, "__X4COMPANION_TEST_NOQPC") then
+    -- test hook: simulate the real game where neither QPC route worked
+elseif tryQpc(K) then
+    TIMER = "qpc"
+else
+    local okl, k32 = pcall(ffi.load, "kernel32")
+    if okl and k32 and tryQpc(k32) then TIMER = "qpc-k32" end
+end
+local os_clock = nil
+if not qpc_buf and not rawget(_G, "__X4COMPANION_TEST_NOQPC") and type(rawget(_G, "os")) == "table" and type(os.clock) == "function" then
+    local ok, v = pcall(os.clock)
+    if ok and type(v) == "number" then os_clock = os.clock; TIMER = "os.clock" end
+end
+local HIRES = TIMER ~= "frame"
 
-local function hires()   -- milliseconds, monotonic
+local function hires()   -- milliseconds, monotonic (0-delta within a frame when TIMER == "frame")
     if qpc_buf then
-        K.QueryPerformanceCounter(qpc_buf)
+        qpc_lib.QueryPerformanceCounter(qpc_buf)
         return tonumber(qpc_buf[0]) * qpc_ms
     end
     if os_clock then return os_clock() * 1000 end
@@ -277,10 +313,12 @@ local function finish(s, name, ok, ...)
     end
     return nil
 end
+local OPS = 0   -- engine calls made through S(): the clock-independent cost measure
 local function S(name, fn, ...)
     local s = SRC[name]
     if not s then s = { err = 0, consec = 0, off = false }; SRC[name] = s end
     if s.off then return nil end
+    OPS = OPS + 1
     return finish(s, name, pcall(fn, ...))
 end
 
@@ -574,6 +612,7 @@ local function defchan(name, def)
         next_due = def.delay or 0, job = nil, resync = true,
         disabled = false, errors = 0, runs = 0, last_err = nil,
         win_ms = 0, win_max = 0, pass_ms = 0, cur_pass = 0, last_pass_ms = 0, frame_ms = 0,
+        win_ops = 0, frame_ops = 0, cur_ops = 0, last_pass_ops = 0,
         state = {},
     }
     CH[name] = ch
@@ -595,24 +634,30 @@ end
 
 local rr = 1   -- round-robin start index
 
+local function overBudget(t0, o0)
+    if HIRES then return (hires() - t0) > CFG.frame_budget_ms end
+    return (OPS - o0) > CFG.frame_budget_ops
+end
+
 local function schedule(now)
-    local t0 = hires()
+    local t0, o0 = hires(), OPS
     local nch = #CH_ORDER
     for k = 0, nch - 1 do
         local ch = CH_ORDER[((rr + k - 1) % nch) + 1]
         if not ch.disabled then
             if ch.job == nil and now >= ch.next_due and W.connected then
-                local s0 = hires()
+                local s0, p0 = hires(), OPS
                 local ok, job = pcall(ch.start, ch, now)
-                local dt = hires() - s0
+                local dt, dops = hires() - s0, OPS - p0
                 ch.frame_ms = ch.frame_ms + dt
-                ch.cur_pass = dt
+                ch.frame_ops = ch.frame_ops + dops
+                ch.cur_pass, ch.cur_ops = dt, dops
                 if not ok then
                     chError(ch, job)
                     ch.next_due = now + ch.interval
                 elseif job == nil or job == true then
                     ch.next_due = now + ch.interval   -- finished inside start()
-                    ch.last_pass_ms = ch.cur_pass
+                    ch.last_pass_ms, ch.last_pass_ops = ch.cur_pass, ch.cur_ops
                     ch.runs = ch.runs + 1
                     ch.resync = false
                 else
@@ -621,39 +666,42 @@ local function schedule(now)
             end
             local nsteps = 0
             while ch.job ~= nil and nsteps < ch.steps_per_frame do
-                if nsteps > 0 and (hires() - t0) > CFG.frame_budget_ms then break end
+                if nsteps > 0 and overBudget(t0, o0) then break end
                 nsteps = nsteps + 1
-                local s0 = hires()
+                local s0, p0 = hires(), OPS
                 local ok, done = pcall(ch.step, ch, ch.job, now)
-                local dt = hires() - s0
+                local dt, dops = hires() - s0, OPS - p0
                 ch.frame_ms = ch.frame_ms + dt
-                ch.cur_pass = ch.cur_pass + dt
+                ch.frame_ops = ch.frame_ops + dops
+                ch.cur_pass, ch.cur_ops = ch.cur_pass + dt, ch.cur_ops + dops
                 if not ok then
                     chError(ch, done)
                     ch.next_due = now + ch.interval
                 elseif done then
                     ch.job = nil
                     ch.next_due = now + ch.interval
-                    ch.last_pass_ms = ch.cur_pass
+                    ch.last_pass_ms, ch.last_pass_ops = ch.cur_pass, ch.cur_ops
                     ch.runs = ch.runs + 1
                     ch.resync = false
                 end
             end
         end
-        if (hires() - t0) > CFG.frame_budget_ms then
+        if overBudget(t0, o0) then
             rr = ((rr + k) % nch) + 1   -- next frame starts after the last channel that ran
             break
         end
     end
     local total = hires() - t0
     for _, ch in ipairs(CH_ORDER) do
-        if ch.frame_ms > 0 then
+        if ch.frame_ms > 0 or ch.frame_ops > 0 then
             ch.win_ms = ch.win_ms + ch.frame_ms
+            ch.win_ops = ch.win_ops + ch.frame_ops
             if ch.frame_ms > ch.win_max then ch.win_max = ch.frame_ms end
-            ch.frame_ms = 0
+            ch.frame_ms, ch.frame_ops = 0, 0
         end
     end
     W.frame_ms_sum = W.frame_ms_sum + total
+    W.frame_ops_sum = (W.frame_ops_sum or 0) + (OPS - o0)
     W.frame_n = W.frame_n + 1
     if total > W.frame_ms_max then W.frame_ms_max = total end
 end
@@ -714,6 +762,40 @@ local function liveVisible(o)
 end
 
 local SHIP_CLASSES = { ship_xs = true, ship_s = true, ship_m = true, ship_l = true, ship_xl = true, spacesuit = true }
+
+-- the one visibility rule (sector channel, details, guidance/order targets)
+local function objVisible(o, cls, isplayer, known, radar)
+    if isplayer then return true end
+    if cls == "station" or cls == "gate" or cls == "highwayentrygate" then return (known == true) and (radar ~= false) end
+    return (known ~= false) and (radar ~= false) and liveVisible(o)
+end
+
+-- radar range of an own object (m): GetComponentData(obj, "maxradarrange") - menu_map.lua:13761 (ships,
+-- stations), :14944 (deployables: satellites, probes); cached per object for a minute
+local rrCache = {}
+local function radarRange(o, now)
+    local c = rrCache[o]
+    if c and (now - c.t) < 60 and now >= c.t then return c.v end
+    local v = round(S("s.radar", GetComponentData, o, "maxradarrange"), 0)
+    if v and v <= 0 then v = nil end
+    rrCache[o] = { v = v, t = now }
+    return v
+end
+
+-- the game's map icon of an object: GetComponentData(obj, "icon") - menu_map.lua:20051 (any selected
+-- component; for a highway its entry gate's icon :20059), :7301 (object list rows)
+-- Ships and stations get it in their class-specific GetComponentData call; for the other classes it
+-- is asked separately and a class whose "icon" query fails is never asked again (the browser then
+-- uses the map legend's icon for that class, menu_map.lua:1543-1637).
+local iconBad = {}
+local function iconOf(o, cls)
+    if iconBad[cls] then return nil end
+    OPS = OPS + 1
+    local ok, ic = pcall(GetComponentData, o, "icon")
+    if not ok then iconBad[cls] = true; return nil end
+    if type(ic) == "string" and ic ~= "" then return ic end
+    return nil
+end
 
 -------------------------------------------------------------------------------
 -- Channel: player
@@ -777,7 +859,35 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
             obj.speed = round(actual, 1)
         end
     end
+    if ship ~= 0 then
+        local ic = S("p.icon", GetComponentData, ship, "icon")
+        obj.ic = (type(ic) == "string" and ic ~= "") and ic or nil
+        obj.rr = radarRange(ship, now)
+    end
     m.object = obj
+
+    -- plotted course (guidance) and autopilot target: GetActiveGuidanceMissionComponent()
+    -- (menu_map.lua:29546, menu_interactmenu.lua:1129), GetAutoPilotTarget() (menu_map.lua:6734).
+    -- Same visibility rule as everything else; position only when the target itself is visible.
+    local function routeTarget(tag, fn)
+        local t = to64(S(tag, fn))
+        if t == 0 or not S("c.valid", IsValidComponent, t) then return nil end
+        local tsec = S("c.issector", C.IsComponentClass, t, "sector") and t or sectorOf(t)
+        if not sectorKnown(tsec, now) then return { unknown = true } end
+        local r = { id = idstr(t), s = idstr(tsec) }
+        local tcls = className(t)
+        if tcls ~= "sector" then
+            local isplayer, known, radar = S(tag .. ".d", GetComponentData, t, "isplayerowned", "isknown", "isradarvisible")
+            if tcls == "zone" or objVisible(t, tcls, isplayer, known, radar) then
+                local tx, _, tz = posOf(t)
+                r.x, r.z = tx, tz
+                if tcls ~= "zone" then r.n = knownName(t) end
+            end
+        end
+        return r
+    end
+    m.guidance = routeTarget("p.guidance", GetActiveGuidanceMissionComponent)
+    m.autopilot = routeTarget("p.autopilot", GetAutoPilotTarget)
 
     local st = S("p.target", C.GetSofttarget2)
     local tid = st and to64(st.softtargetID) or 0
@@ -864,23 +974,37 @@ defchan("galaxy", { every = 60, max = 300, budget = 0.04, steps = 2,
 -------------------------------------------------------------------------------
 -- Gates: MD raises x4companion.gatesBegin / .gate (param = gate) / .gatesEnd
 
-local function onGatesBegin(_, n)
-    W.gates_pending = {}
-    W.gates_state = "receiving"
+-- v1.1: MD stores the lists on the player's blackboard and raises ONE event (see md\x4_companion_gates.xml;
+-- one raise_lua_event per gate delivered a single gate in the real game). Read + clear like SirNukes'
+-- APIs do: GetNPCBlackboard(player, "$var") / SetNPCBlackboard(player, "$var", nil)
+-- (vanilla GetNPCBlackboard menu_map.lua:4137, SetNPCBlackboard menu_trader_inventory.lua:538).
+local function readBlackboardList(pid, var, out, sign)
+    local list = S("g.bb", GetNPCBlackboard, pid, var)
+    S("g.bbclear", SetNPCBlackboard, pid, var, nil)
+    local n = 0
+    if type(list) == "table" then
+        for _, gate in ipairs(list) do
+            local g = to64(gate)
+            if g ~= 0 and #out < 5000 then out[#out + 1] = sign * g; n = n + 1 end
+        end
+    end
+    return n
 end
-local function onGate(_, gate)
-    if W.gates_pending == nil then W.gates_pending = {} end
-    local g = to64(gate)
-    if g ~= 0 and #W.gates_pending < 5000 then W.gates_pending[#W.gates_pending + 1] = g end
-end
-local function onHwGate(_, gate)
-    if W.gates_pending == nil then W.gates_pending = {} end
-    local g = to64(gate)
-    if g ~= 0 and #W.gates_pending < 5000 then W.gates_pending[#W.gates_pending + 1] = -g end   -- negative = superhighway
-end
-local function onGatesEnd(_, n)
-    W.gates = W.gates_pending or {}
-    W.gates_pending = nil
+local function onGates(_, mdcount)
+    local pid = S("g.pid", ConvertStringTo64Bit, tostring(C.GetPlayerID()))
+    if not pid then return end
+    local out = {}
+    local n = readBlackboardList(pid, "$x4companion_gates", out, 1)
+    local nh = readBlackboardList(pid, "$x4companion_hwgates", out, -1)   -- negative = superhighway
+    if n == 0 and nh == 0 then
+        -- a second event of the same frame finds the lists already read: keep what we have
+        W.gates_md = tonumber(mdcount) or W.gates_md
+        return
+    end
+    W.gates = out
+    W.gates_md = tonumber(mdcount)
+    W.gates_rx = n
+    W.gates_hw = nh
     W.gates_state = "received"
     if CH.gates then CH.gates.next_due = 0; CH.gates.fresh = true end
 end
@@ -920,6 +1044,47 @@ defchan("gates", { every = 5, max = 60, budget = 0.04, steps = 2,
             end
         end
         return false
+    end })
+
+-------------------------------------------------------------------------------
+-- Channel: theme (the game map's own colours, sent on connect and when they change)
+-- GetHoloMapColors(): helper.lua:13069-13071 (Helper.getHoloMapColors) - the colours the map legend
+-- uses per relation/type (menu_map.lua:1543-1637: playercolor = owned, friendcolor = neutral,
+-- enemycolor, hostilecolor, gatecolor, highwaygatecolor, ...). Color["..."] mappings of the UI
+-- (libraries\colors.xml) for text/background: global Color table as used in menu_map.lua:7317.
+
+local HOLO_NAMES = { "productioncolor", "buildcolor", "storagecolor", "radarcolor", "dronedockcolor", "efficiencycolor",
+    "defencecolor", "playercolor", "friendcolor", "enemycolor", "missioncolor", "currentplayershipcolor", "visitorcolor",
+    "lowalertcolor", "mediumalertcolor", "highalertcolor", "gatecolor", "highwaygatecolor", "missilecolor",
+    "superhighwaycolor", "highwaycolor", "hostilecolor" }
+local UI_COLORS = { "text_normal", "text_inactive", "text_player", "text_enemy", "text_hostile", "text_mission",
+    "icon_normal", "row_background_selected", "table_row_highlight", "frame_background_semitransparent",
+    "shieldhullbar_shield", "shieldhullbar_hull", "resource_map_default" }
+
+local function colorOf(c)
+    if type(c) ~= "table" then return nil end
+    local r, g, b, a = tonumber(c.r), tonumber(c.g), tonumber(c.b), tonumber(c.a)
+    if not (r and g and b) then return nil end
+    return { r = round(r, 0), g = round(g, 0), b = round(b, 0), a = a and round(a, 0) or nil }
+end
+
+defchan("theme", { every = 30, max = 120, budget = 0.05,
+    start = function(ch, now)
+        local m = { type = "theme", holo = {}, ui = {} }
+        local vals = { S("th.holo", GetHoloMapColors) }
+        for i, name in ipairs(HOLO_NAMES) do m.holo[name] = colorOf(vals[i]) end
+        local Col = rawget(_G, "Color")
+        if type(Col) == "table" then
+            for _, name in ipairs(UI_COLORS) do
+                local ok, c = pcall(function() return Col[name] end)
+                if ok then m.ui[name] = colorOf(c) end
+            end
+        end
+        local js = json(m)
+        if ch.resync or js ~= ch.state.last then
+            if send(m) then ch.state.last = js end
+        end
+        return true
     end })
 
 -------------------------------------------------------------------------------
@@ -1016,33 +1181,34 @@ defchan("sector", { every = 1.0, max = 8.0, budget = 0.12, steps = 6,
                 if SECTOR_KEEP[cls] and S("c.valid", IsValidComponent, o) then
                     local owner, rel, isplayer, enemy, hostile, known, radar, wreck, purpose =
                         S("s.data", GetComponentData, o, "owner", "uirelation", "isplayerowned", "isenemy", "ishostile", "isknown", "isradarvisible", "iswreck", "primarypurpose")
-                    local visible
-                    if isplayer then
-                        visible = true
-                    elseif cls == "station" or cls == "gate" or cls == "highwayentrygate" then
-                        visible = (known == true) and (radar ~= false)
-                    else
-                        visible = (known ~= false) and (radar ~= false) and liveVisible(o)
-                    end
-                    if visible then
+                    if objVisible(o, cls, isplayer, known, radar) then
                         local x, y, z, yaw = posOf(o)
                         local e = { id = idstr(o), c = cls, n = knownName(o), o = owner, r = rel,
                                     x = x, y = y, z = z }
-                        if isplayer then e.pl = true end
+                        if isplayer then
+                            e.pl = true
+                            e.rr = radarRange(o, now)
+                        end
                         if hostile then e.h = true elseif enemy then e.e = true end
                         if wreck then e.wr = true end
                         if SHIP_CLASSES[cls] then
                             e.yaw = yaw
                             e.p = purpose
-                            local hull, code = S("s.ship", GetComponentData, o, "hullpercent", "idcode")
-                            e.hull = round(hull, 0); e.code = code
+                            -- icon + ismissiontarget as the object list asks them (menu_map.lua:7301)
+                            local hull, code, ic, mt = S("s.ship", GetComponentData, o, "hullpercent", "idcode", "icon", "ismissiontarget")
+                            e.hull = round(hull, 0); e.code = code; e.ic = ic; e.mt = mt or nil
                         elseif cls == "gate" or cls == "highwayentrygate" then
                             local dest = to64(S("s.gate", GetComponentData, o, "destination"))
                             local ds = dest ~= 0 and sectorOf(dest) or 0
                             if ds ~= 0 and sectorKnown(ds, now) then e.ds = idstr(ds) else e.du = true end
+                            e.ic = iconOf(o, cls)
                         elseif cls == "station" then
-                            e.code = S("s.code", GetComponentData, o, "idcode")
+                            local code, ic, mt, hull = S("s.code", GetComponentData, o, "idcode", "icon", "ismissiontarget", "hullpercent")
+                            e.code = code; e.ic = ic; e.mt = mt or nil; e.hull = round(hull, 0)
+                        else
+                            e.ic = iconOf(o, cls)
                         end
+                        if e.ic == "" then e.ic = nil end
                         chunkAdd(job.ck, e)
                     else
                         job.hidden = job.hidden + 1
@@ -1091,6 +1257,59 @@ local function currentOrder(id)
     return nil
 end
 
+-- Order queue of an own ship with the first map point of every order - the data behind the order
+-- lines the game map draws for a selected ship. Queue: C.GetNumOrders / C.GetOrders (menu_map.lua:715/747),
+-- parameters: GetOrderParams(ship, idx) (menu_map.lua:11376), a "position" parameter is
+-- { space, { x, y, z } } (menu_map.lua:26781), an "object" parameter a component.
+-- Points are only sent when their sector is known and (for objects) the object is visible.
+local function paramPoint(p, now)
+    if type(p) ~= "table" then return nil end
+    local v = p.value
+    if p.type == "position" and type(v) == "table" and type(v[2]) == "table" then
+        local sp = to64(v[1])
+        if sp == 0 then return nil end
+        local issec = S("c.issector", C.IsComponentClass, sp, "sector")
+        local sec = issec and sp or sectorOf(sp)
+        if not sectorKnown(sec, now) then return nil end
+        local bx, bz = 0, 0
+        if not issec then local x, _, z = posOf(sp); bx, bz = x or 0, z or 0 end
+        return { s = idstr(sec), x = round(bx + (tonumber(v[2][1]) or 0), 0), z = round(bz + (tonumber(v[2][3]) or 0), 0) }
+    elseif p.type == "object" and v ~= nil and v ~= 0 then
+        local o = to64(v)
+        if o == 0 or not S("c.valid", IsValidComponent, o) then return nil end
+        local sec = sectorOf(o)
+        if not sectorKnown(sec, now) then return nil end
+        local ocls = className(o)
+        local isplayer, known, radar = S("o.pdata", GetComponentData, o, "isplayerowned", "isknown", "isradarvisible")
+        if not objVisible(o, ocls, isplayer, known, radar) then return nil end
+        local x, _, z = posOf(o)
+        return { s = idstr(sec), x = x, z = z, id = idstr(o) }
+    end
+    return nil
+end
+
+local function orderQueue(ship)
+    local now = realtime()
+    local n = math.min(tonumber(S("o.num", C.GetNumOrders, ship)) or 0, 12)
+    local out = arr()
+    if n <= 0 then return out end
+    local buf = ffi.new("Order[?]", n)
+    n = tonumber(S("o.get", C.GetOrders, buf, n, ship)) or 0
+    for i = 1, n do
+        local def = cstr(buf[i - 1].orderdef)
+        local e = { d = def, n = orderName(def), st = cstr(buf[i - 1].statename) }
+        local params = S("o.params", GetOrderParams, ship, i)
+        if type(params) == "table" then
+            for _, p in ipairs(params) do
+                local pt = paramPoint(p, now)
+                if pt then e.pt = pt; break end
+            end
+        end
+        out[#out + 1] = e
+    end
+    return out
+end
+
 local function enumIds(numfn, listfn, arg, tag)
     local n = tonumber(S(tag .. ".n", numfn, arg)) or 0
     local out = {}
@@ -1136,20 +1355,20 @@ defchan("property", { every = 4, max = 30, budget = 0.12, steps = 4,
             job.all[#job.all + 1] = sid
             local e
             if kind == "ship" then
-                local name, code, hull, shield, purpose, fleet, docked, macro =
-                    S("pr.ship", GetComponentData, id, "name", "idcode", "hullpercent", "shieldpercent", "primarypurpose", "fleetname", "isdocked", "macro")
+                local name, code, hull, shield, purpose, fleet, docked, macro, icon =
+                    S("pr.ship", GetComponentData, id, "name", "idcode", "hullpercent", "shieldpercent", "primarypurpose", "fleetname", "isdocked", "macro", "icon")
                 local def, oname, ostate, nord, isdef = currentOrder(id)
                 local cmd = to64(S("pr.cmd", GetCommander, id))
                 e = { id = sid, k = "ship", n = name, code = code, c = className(id), p = purpose,
                       s = idstr(sectorOf(id)), hull = round(hull, 0), shield = round(shield, 0),
-                      fl = fleet ~= "" and fleet or nil, dk = docked or nil, mc = macro,
+                      fl = fleet ~= "" and fleet or nil, dk = docked or nil, mc = macro, ic = icon ~= "" and icon or nil,
                       od = def, on = oname, os = ostate, oq = nord, odf = isdef or nil,
                       cmd = cmd ~= 0 and idstr(cmd) or nil }
             else
-                local name, code, hull, money = S("pr.station", GetComponentData, id, "name", "idcode", "hullpercent", "money")
+                local name, code, hull, money, icon = S("pr.station", GetComponentData, id, "name", "idcode", "hullpercent", "money", "icon")
                 local mods = tonumber(S("pr.modules", C.GetNumStationModules, id, false, false))
                 local wf = S("pr.workforce", C.GetWorkForceInfo, id, "")
-                e = { id = sid, k = "station", n = name, code = code, c = "station", s = idstr(sectorOf(id)),
+                e = { id = sid, k = "station", n = name, code = code, c = "station", s = idstr(sectorOf(id)), ic = icon ~= "" and icon or nil,
                       hull = round(hull, 0), money = round(money, 0), mods = mods,
                       wf = wf and tonumber(wf.current) or nil, wfc = wf and tonumber(wf.capacity) or nil }
             end
@@ -1470,18 +1689,22 @@ defchan("stats", { every = 2, max = 2, budget = 1,
         local chs = {}
         for _, c in ipairs(CH_ORDER) do
             local avg = c.win_ms / frames
+            local aops = c.win_ops / frames
             chs[c.name] = { avg = round(avg, 4), max = round(c.win_max, 3), pass = round(c.last_pass_ms, 3),
+                            ops = round(aops, 2), pops = c.last_pass_ops,
                             iv = round(c.interval, 2), err = c.errors, off = c.disabled or nil, runs = c.runs,
                             le = c.last_err }
-            -- throttle: sustained over budget -> slower; well under -> back toward the base rate
+            -- throttle: sustained over budget -> slower; well under -> back toward the base rate.
+            -- Measured in ms with a real clock, otherwise in engine calls (budget * ops_per_ms).
             if c ~= ch then
-                if avg > c.budget and c.interval < c.max_interval then
+                local load = HIRES and avg or (aops / CFG.ops_per_ms)
+                if load > c.budget and c.interval < c.max_interval then
                     c.interval = math.min(c.interval * 1.5, c.max_interval)
-                elseif avg < c.budget / 3 and c.interval > c.base then
+                elseif load < c.budget / 3 and c.interval > c.base then
                     c.interval = math.max(c.interval / 1.25, c.base)
                 end
             end
-            c.win_ms, c.win_max = 0, 0
+            c.win_ms, c.win_max, c.win_ops = 0, 0, 0
         end
         local srcoff, srcerr = arr(), {}
         for name, s in pairs(SRC) do
@@ -1489,13 +1712,14 @@ defchan("stats", { every = 2, max = 2, budget = 1,
             if s.err > 0 then srcerr[name] = s.err end
         end
         send({ type = "stats", span = round(span, 2), frames = W.frame_n,
-               frame = { avg = round(W.frame_ms_sum / frames, 4), max = round(W.frame_ms_max, 3) },
+               frame = { avg = round(W.frame_ms_sum / frames, 4), max = round(W.frame_ms_max, 3),
+                         ops = round((W.frame_ops_sum or 0) / frames, 2) },
                ch = chs, srcoff = srcoff, srcerr = srcerr, pending = W.pending, sent = W.nsent,
                bytes = W.nbytes, dropped = W.ndrop, wfail = W.nfail, cmds = W.ncmd,
-               gates = W.gates_state, ngates = W.gates_n, hk = W.hk_registered,
-               timer = qpc_buf and "qpc" or (os_clock and "os.clock" or "realtime"),
+               gates = W.gates_state, ngates = W.gates_n, gates_md = W.gates_md, gates_rx = W.gates_rx, gates_hw = W.gates_hw,
+               hk = W.hk_registered, timer = TIMER, hires = HIRES,
                nframe = W.n_frame, nmd = W.n_md, watch = W.watch ~= 0 and idstr(W.watch) or nil })
-        W.frame_ms_sum, W.frame_ms_max, W.frame_n = 0, 0, 0
+        W.frame_ms_sum, W.frame_ms_max, W.frame_n, W.frame_ops_sum = 0, 0, 0, 0
         return true
     end })
 
@@ -1646,6 +1870,55 @@ COMMANDS.flyto = function(args)
     return true, "repülés a szektorba"
 end
 
+-- "details": read-only extra data about ONE object the player can see, for the info panel.
+-- Same visibility rule as the sector channel; cargo like the map's info panel (menu_map.lua:20192-20215):
+-- GetComponentData(obj, "cargo") (menu_map.lua:20210), ware list only if
+-- C.IsInfoUnlockedForPlayer(obj, "storage_warelist"), amounts only if "storage_amounts".
+COMMANDS.details = function(args, seq)
+    local n = validId(args[1])
+    if not n then return false, "érvénytelen objektum" end
+    local cls = className(n)
+    local owner, isplayer, known, radar, ownername, hull, shield, purpose, code =
+        GetComponentData(n, "owner", "isplayerowned", "isknown", "isradarvisible", "ownername", "hullpercent", "shieldpercent", "primarypurpose", "idcode")
+    if not objVisible(n, cls, isplayer, known, radar) then return false, "nem látható objektum" end
+    local sec = sectorOf(n)
+    if not sectorKnown(sec) then return false, "nem látható objektum" end
+    local ic = (SHIP_CLASSES[cls] or cls == "station") and S("d.icon", GetComponentData, n, "icon") or iconOf(n, cls)
+    local d = { type = "details", seq = tonumber(seq), id = idstr(n), n = knownName(n), c = cls, o = owner,
+                on = ownername, pl = isplayer or nil, hull = round(hull, 0), shield = round(shield, 0), p = purpose,
+                code = code, s = idstr(sec), ic = (type(ic) == "string" and ic ~= "") and ic or nil }
+    if SHIP_CLASSES[cls] or cls == "station" then
+        local wl = isplayer or S("d.wl", C.IsInfoUnlockedForPlayer, n, "storage_warelist")
+        local am = isplayer or S("d.am", C.IsInfoUnlockedForPlayer, n, "storage_amounts")
+        d.cwl, d.cam = wl and true or false, am and true or false
+        if wl then
+            local cargo = S("d.cargo", GetComponentData, n, "cargo")
+            if type(cargo) == "table" then
+                local list = arr()
+                for ware, amount in pairs(cargo) do
+                    list[#list + 1] = { w = ware, n = S("e.ware", GetWareData, ware, "name"), a = am and amount or nil }
+                end
+                table.sort(list, function(a, b) return (a.a or 0) > (b.a or 0) end)
+                while #list > 40 do list[#list] = nil end
+                d.cargo = list
+            end
+        end
+    end
+    if isplayer and SHIP_CLASSES[cls] then
+        local def, oname, ostate, nord, isdef = currentOrder(n)
+        d.od, d.oname, d.os, d.oq, d.odf = def, oname, ostate, nord, isdef or nil
+        local cmd = to64(S("pr.cmd", GetCommander, n))
+        d.cmd = cmd ~= 0 and idstr(cmd) or nil
+        d.rr = radarRange(n, realtime())
+        d.orders = orderQueue(n)
+    elseif isplayer and cls == "station" then
+        d.money = round(S("d.money", GetComponentData, n, "money"), 0)
+        d.mods = tonumber(S("pr.modules", C.GetNumStationModules, n, false, false))
+    end
+    send(d, false)
+    return true, "részletek"
+end
+
 local function ack(seq, name, ok, msg)
     send({ type = "ack", seq = tonumber(seq), cmd = name, ok = ok and true or false, msg = msg }, false)
 end
@@ -1665,7 +1938,7 @@ local function runCommand(line)
     if not fn then ack(seq, name, false, "ismeretlen parancs"); return end
     local args = {}
     for a in string.gmatch(rest or "", "%S+") do args[#args + 1] = a end
-    local ok, r1, r2 = pcall(fn, args)
+    local ok, r1, r2 = pcall(fn, args, seq)
     if not ok then
         warn("cmd:" .. name, "command " .. name .. " failed: " .. tostring(r1))
         ack(seq, name, false, "hiba: " .. tostring(r1))
@@ -1688,17 +1961,24 @@ end
 -------------------------------------------------------------------------------
 -- In-game hotkeys (Native Hotkey API, optional): each press is sent to the browser
 
+-- ids are stable (the player's key bindings are stored per id); names describe the v1.1 UI
 local HOTKEYS = {
-    { "panel_next",    "Companion: következő panel" },
-    { "view_toggle",   "Companion: galaxis / szektor nézet" },
+    { "panel_next",    "Companion: következő nézet" },
+    { "view_prev",     "Companion: előző nézet" },
+    { "view_map",      "Companion: vissza a térképre" },
+    { "view_toggle",   "Companion: galaxis / szektor" },
     { "zoom_in",       "Companion: nagyítás" },
     { "zoom_out",      "Companion: kicsinyítés" },
+    { "zoom_fit",      "Companion: illesztés (minden látsszon)" },
+    { "log_down",      "Companion: lista lefelé" },
+    { "log_up",        "Companion: lista felfelé" },
+    { "list_select",   "Companion: kijelölés a listában" },
+    { "details",       "Companion: részletek nyit / zár" },
+    { "alert_next",    "Companion: következő riasztás" },
     { "ship_next",     "Companion: következő saját hajó" },
     { "ship_prev",     "Companion: előző saját hajó" },
-    { "log_down",      "Companion: napló lejjebb" },
-    { "log_up",        "Companion: napló feljebb" },
-    { "show_selected", "Companion: kijelölt / célzott objektum mutatása" },
-    { "auto",          "Companion: vissza automata kijelzőre" },
+    { "show_selected", "Companion: játékban kijelölt / célzott objektum" },
+    { "auto",          "Companion: vissza a hajómra (automata)" },
     { "ack_alerts",    "Companion: riasztások nyugtázása" },
 }
 
@@ -1754,7 +2034,7 @@ local function tick(src)
             table.sort(allow)
             send({ type = "hello", mod = MOD, ver = VERSION, session = W.session, allow = allow,
                    hotkeys = W.hk_registered, loglib = type(rawget(_G, "UIInfo")) == "function",
-                   timer = qpc_buf and "qpc" or "clock" }, false)
+                   timer = TIMER }, false)
         end
         return
     end
@@ -1801,13 +2081,10 @@ local function init()
     end
 
     pcall(RegisterEvent, "x4companion.mdTick", onMdTick)
-    pcall(RegisterEvent, "x4companion.gatesBegin", onGatesBegin)
-    pcall(RegisterEvent, "x4companion.gate", onGate)
-    pcall(RegisterEvent, "x4companion.hwgate", onHwGate)
-    pcall(RegisterEvent, "x4companion.gatesEnd", onGatesEnd)
+    pcall(RegisterEvent, "x4companion.gates", onGates)
     pcall(RegisterEvent, "HotkeyApi.Register_Request", function() pcall(registerHotkeys) end)
 
-    local startline = "v" .. VERSION .. " loaded (pipe \\\\.\\pipe\\" .. CFG.pipe_name .. ", timer " .. (qpc_buf and "qpc" or "clock") .. ")"
+    local startline = "v" .. VERSION .. " loaded (pipe \\\\.\\pipe\\" .. CFG.pipe_name .. ", timer " .. TIMER .. ")"
     if type(rawget(_G, "UIInfo")) == "function" then
         info("start", startline)
     else
@@ -1822,5 +2099,5 @@ if not okInit then pcall(DebugError, MOD .. ": init failed: " .. tostring(errIni
 if rawget(_G, "__X4COMPANION_TEST_C") then
     __X4COMPANION_TEST = { W = W, CH = CH, CFG = CFG, SRC = SRC, onFrame = onFrame, onMdTick = onMdTick,
                            onRead = onRead, json = json, utf8clean = utf8clean, registerHotkeys = registerHotkeys,
-                           onGatesBegin = onGatesBegin, onGate = onGate, onGatesEnd = onGatesEnd }
+                           onGates = onGates, TIMER = TIMER }
 end

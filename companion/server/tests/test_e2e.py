@@ -126,6 +126,10 @@ async def main() -> int:
                 if subprocess.run([node, "--check", str(tgt)], capture_output=True).returncode != 0:
                     bad.append(f.name)
         check(not bad, f"web JS modules parse (node --check): {bad or 'all ok'}")
+        for t in ("test_camera.mjs", "test_mapstyle.mjs"):
+            r = subprocess.run([node, str(ROOT / "tests" / t)], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            last = [l for l in r.stdout.splitlines() if "checks passed" in l]
+            check(r.returncode == 0, f"browser logic {t}: {last[-1] if last else r.stdout[-300:]}")
 
     server = start_server()
     async with aiohttp.ClientSession() as s:
@@ -136,12 +140,25 @@ async def main() -> int:
             check(r.status == 200 and 'type="module"' in body and "app.js" in body, "GET / serves the dashboard")
             check("default-src 'self'" in r.headers.get("Content-Security-Policy", "") and r.headers.get("X-Content-Type-Options") == "nosniff",
                   "CSP (no external sources) + nosniff headers")
-        for f, ct in (("app.js", "text/javascript"), ("map.js", "text/javascript"), ("panels.js", "text/javascript"), ("util.js", "text/javascript"), ("style.css", "text/css")):
+        for f, ct in (("app.js", "text/javascript"), ("map.js", "text/javascript"), ("panels.js", "text/javascript"), ("util.js", "text/javascript"),
+                      ("mapstyle.js", "text/javascript"), ("dock.js", "text/javascript"), ("camera.js", "text/javascript"), ("icons.js", "text/javascript"),
+                      ("style.css", "text/css")):
             async with s.get(BASE + "/" + f) as r:
                 check(r.status == 200 and ct in r.headers.get("Content-Type", ""), f"GET /{f} ({r.headers.get('Content-Type')})")
         for path in ("/..%2fserver.py", "/server.py", "/%2e%2e/pipe.py", "/web/../server.py"):
             async with s.get(BASE + path) as r:
                 check(r.status in (403, 404), f"no file outside web/ via {path} ({r.status})")
+        async with s.get(BASE + "/icons/index.json") as r:
+            idx = await r.json()
+            check(r.status == 200 and "icons" in idx, f"GET /icons/index.json ({idx.get('count')} exported icons{', export missing' if idx.get('missing_export') else ''})")
+        if idx.get("icons"):
+            name = "ship_s_fight_01" if "ship_s_fight_01" in idx["icons"] else next(iter(idx["icons"]))
+            async with s.get(BASE + f"/icons/{name}.png") as r:
+                body = await r.read()
+                check(r.status == 200 and r.headers.get("Content-Type") == "image/png" and body[1:4] == b"PNG", f"GET /icons/{name}.png serves the exported game icon")
+        for path in ("/icons/..%2f..%2fserver.py", "/icons/index.py", "/icons/x.png.json"):
+            async with s.get(BASE + path) as r:
+                check(r.status in (403, 404), f"icon route refuses {path} ({r.status})")
         async with s.get(BASE + "/", headers={"Host": "evil.example:8791"}) as r:
             check(r.status == 403, f"foreign Host refused ({r.status})")
         try:
@@ -160,7 +177,7 @@ async def main() -> int:
             sim = start_sim("--ships", "300", "--hotkeys", "--bad-bytes", "--junk", "--speed", "3")
             await ws.pump(14)
             types = {m["type"] for m in ws.msgs}
-            for t in ("hello", "player", "galaxy", "gates", "sector", "property", "log", "ticker", "messages", "missions", "offers",
+            for t in ("hello", "player", "theme", "galaxy", "gates", "sector", "property", "log", "ticker", "messages", "missions", "offers",
                       "factions", "economy", "stats", "status", "hotkey"):
                 check(t in types, f"[stream] browser receives '{t}' ({len(ws.of(t))})")
             pl = ws.of("player")
@@ -196,8 +213,19 @@ async def main() -> int:
             check(len(ws.of("missions")[-1]["items"]) >= 5 and len(ws.of("offers")[-1]["items"]) >= 10, "[missions] accepted + offers")
             check(len(ws.of("factions")[-1]["items"]) >= 15, "[factions] relations + licences")
             check(ws.of("economy")[-1]["inc"] > 0, "[economy] summary")
+            th = ws.of("theme")[-1]
+            check(th.get("holo", {}).get("playercolor") and th["holo"].get("friendcolor"), "[map] theme (map colours) reaches the browser")
+            check(any(o.get("ic") for o in sc["objs"]) and any(o.get("rr") for o in sc["objs"] if o.get("pl")),
+                  "[map] sector objects carry the game icon id and own radar ranges")
             hk = ws.of("hotkey")
             check(hk and hk[0].get("action"), f"[hotkeys] in-game hotkey events reach the browser ({[h['action'] for h in hk][:4]})")
+
+            # 1b) details (read-only, no control switch): own ship with order points
+            own = next(o for o in sc["objs"] if o.get("pl") and o["c"].startswith("ship") and o["id"] in prop)
+            await ws.send({"type": "cmd", "cmd": "details", "args": [own["id"]], "id": 90})
+            det = await ws.pump(4, until=lambda d: d["type"] == "details" and d.get("id") == own["id"])
+            check(det and det.get("orders") and det["orders"][0].get("pt") and det.get("ic"),
+                  f"[details] info panel data + order queue points without the control switch ({len(det.get('orders') or []) if det else 0} orders)")
 
             # 2) commands
             await ws.send({"type": "cmd", "cmd": "openmap", "args": [ships[0]["id"]], "id": 1})

@@ -1,8 +1,12 @@
-// X4 Companion — app core: state store, WebSocket, layout, display mode, in-game hotkeys.
+// X4 Companion — app core: state store, WebSocket, navigation (views), dock modules, keyboard,
+// in-game hotkeys, details polling, the game's theme and icons.
 "use strict";
-import { $, $$, el, num, money, dist, gameTime, loadSettings, saveSettings, LOGCAT_HU, throttle } from "./util.js";
+import { $, $$, el, num, money, dist, gameTime, loadSettings, saveSettings, throttle } from "./util.js";
 import { MapView } from "./map.js";
 import * as P from "./panels.js";
+import { Dock } from "./dock.js";
+import { iconEl, icon } from "./icons.js";
+import { setIconIndex } from "./mapstyle.js";
 
 // ---------------------------------------------------------------- event bus + store
 const handlers = {};
@@ -12,18 +16,18 @@ export const bus = {
 };
 
 export const S = {
-  wsOpen: false, status: null, hello: null, control: false, originOk: true,
+  wsOpen: false, status: null, hello: null, control: false, originOk: true, theme: null,
   liveGalaxy: null, hwlinks: [],
   sectors: new Map(), clusters: new Map(), sectorByMacro: new Map(), links: [], stubs: [], gates: [], gatesBySector: new Map(),
-  scans: {}, property: new Map(), propertyMeta: {},
+  scans: {}, property: new Map(), propertyMeta: {}, details: {},
   log: [], ticker: [], readUpTo: {}, messages: null, missions: [], offers: [], factions: {}, factionList: [],
   economy: null, stats: null, player: null, playerAt: 0, prevPlayer: null, speedEst: null,
-  yaw: { a: 0, b: 0, c: 0 }, selected: null, lastAck: null,
+  yaw: { a: 0, b: 0, c: 0 }, selected: null, lastAck: null, icons: 0,
 };
 window.__x4c = S;   // for debugging in the browser console
 
 const params = new URLSearchParams(location.search);
-export const SINGLE = params.get("panel");   // pop-out window: map | property | log | missions | factions | economy | diag | player
+export const SINGLE = params.get("panel");   // "↗ külön ablakba": one module in its own window
 
 // ---------------------------------------------------------------- galaxy indexes
 function rebuildGalaxy() {
@@ -67,6 +71,10 @@ function rebuildLinks() {
     if (!S.gatesBySector.has(String(g.s))) S.gatesBySector.set(String(g.s), []);
     S.gatesBySector.get(String(g.s)).push(g);
   }
+  // gates seen in sector scans also give links (the gate list may lag behind)
+  for (const [sid, sc] of Object.entries(S.scans)) for (const o of sc.objs || []) {
+    if ((o.c === "gate" || o.c === "highwayentrygate") && o.ds) add(String(sid), String(o.ds), o.c === "gate" ? "gate" : "hw");
+  }
   for (const [a, b] of S.hwlinks || []) add(String(a), String(b), "hw");
 }
 
@@ -98,7 +106,6 @@ function addLog(items, initial) {
 }
 
 function onPlayer(p) {
-  const now = performance.now();
   const prev = S.player;
   if (prev && prev.object && p.object && prev.sector && p.sector && prev.sector.id === p.sector.id) {
     const dt = (p.t ?? 0) - (prev.t ?? 0);
@@ -119,7 +126,7 @@ function onPlayer(p) {
   }
   S.prevPlayer = prev;
   S.player = p;
-  S.playerAt = now;
+  S.playerAt = performance.now();
   bus.emit("player", p);
 }
 function angDiff(a, b) { let d = Math.abs(a - b) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; }
@@ -131,7 +138,7 @@ export function yawConvention() {
   if (c > a && c > b) return "c";
   return "a";
 }
-export function headingOf(yaw) {     // returns screen heading angle in world (x east, z north), radians from north
+export function headingOf(yaw) {     // screen heading angle in world (x east, z north), radians from north
   const conv = yawConvention();
   if (conv === "b") return -yaw;
   if (conv === "c") return yaw * Math.PI / 180;
@@ -151,6 +158,7 @@ function apply(m) {
       S.log = [];
       addLog(m.log || [], true);
       S.ticker = m.ticker || [];
+      if (m.theme) { S.theme = m.theme; bus.emit("theme"); }
       if (m.player) onPlayer(m.player);
       for (const k of ["messages", "missions", "offers", "factions", "economy", "stats"]) if (m[k]) apply(m[k]);
       if (m.status) apply(m.status);
@@ -165,17 +173,25 @@ function apply(m) {
       break;
     }
     case "hello": S.hello = m.hello; bus.emit("hello"); break;
+    case "theme": S.theme = m; bus.emit("theme"); break;
     case "player": onPlayer(m); break;
     case "galaxy": S.liveGalaxy = m.clusters; rebuildGalaxy(); break;
     case "gates": S.gates = m.gates || []; rebuildLinks(); bus.emit("galaxy"); break;
     case "hwlinks": S.hwlinks = m.links || []; rebuildLinks(); bus.emit("galaxy"); break;
-    case "sector": S.scans[m.sid] = m; bus.emit("scan", m.sid); break;
+    case "sector": {
+      const before = S.links.length;
+      S.scans[m.sid] = m;
+      if ((m.objs || []).some((o) => o.ds)) { rebuildLinks(); if (S.links.length !== before) bus.emit("galaxy"); }
+      bus.emit("scan", m.sid);
+      break;
+    }
     case "property":
       for (const e of m.upd || []) S.property.set(String(e.id), e);
       for (const k of m.del || []) S.property.delete(String(k));
       if (m.meta) S.propertyMeta = m.meta;
       bus.emit("property");
       break;
+    case "details": S.details[String(m.id)] = m; bus.emit("details", m.id); break;
     case "log": addLog(m.items || [], !!m.initial); break;
     case "ticker":
       S.ticker.push(...(m.items || []));
@@ -194,15 +210,21 @@ function apply(m) {
     case "stats": S.stats = m; bus.emit("stats"); break;
     case "hotkey": onHotkey(m); break;
     case "control": S.control = !!m.enabled; S.originOk = m.origin_ok; bus.emit("control"); break;
-    case "cmdreply": if (!m.ok) toast(`Parancs (${m.cmd}): ${m.msg}`, "bad"); break;
+    case "cmdreply": if (!m.ok && m.cmd !== "details") toast(`Parancs (${m.cmd}): ${m.msg}`, "bad"); break;
     case "ack":
       S.lastAck = m;
-      if (m.mine) toast(`${m.ok ? "✓" : "✗"} ${m.cmd}: ${m.msg || ""}`, m.ok ? "ok" : "bad");
+      if (m.cmd === "details") {
+        if (!m.ok && detailsPending.has(m.seq)) { S.details[detailsPending.get(m.seq)] = null; bus.emit("details"); }
+        detailsPending.delete(m.seq);
+        break;
+      }
+      if (m.mine) toast(`${m.ok ? "✓" : "✗"} ${CMD_HU[m.cmd] || m.cmd}: ${m.msg || ""}`, m.ok ? "ok" : "bad");
       bus.emit("ack", m);
       break;
     default: break;
   }
 }
+const CMD_HU = { openmap: "játék térképe", select: "kijelölés", target: "célpont", guidance: "útvonal", guidance_end: "útvonal törlése", stop: "állj", flyto: "repülj ide" };
 
 // ---------------------------------------------------------------- WebSocket
 let ws = null;
@@ -223,7 +245,7 @@ function connect() {
   ws.onmessage = (ev) => {
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
-    apply(m);
+    applyWrapped(m);
   };
 }
 export function send(obj) {
@@ -249,7 +271,30 @@ export function watchSector(sid) {
   send({ type: "watch", sid: sid || "0" });
 }
 
-// ---------------------------------------------------------------- toasts / banners
+// details (info panel + order lines): read-only, no control switch needed; refreshed while selected
+const detailsPending = new Map();
+function requestDetails(id) {
+  if (!id || !/^\d+$/.test(id)) return;
+  const myId = ++cmdId;
+  send({ type: "cmd", cmd: "details", args: [id], id: myId });
+  // the server tells the seq in cmdreply; remember by id until the ack arrives
+  pendingById.set(myId, id);
+}
+const pendingById = new Map();
+function applyWrapped(m) {
+  if (m.type === "cmdreply" && m.cmd === "details" && pendingById.has(m.id)) {
+    if (m.ok && m.seq) detailsPending.set(m.seq, pendingById.get(m.id));
+    else S.details[pendingById.get(m.id)] = null;
+    pendingById.delete(m.id);
+  }
+  apply(m);
+}
+setInterval(() => {
+  const sel = S.selected;
+  if (sel && sel.kind === "obj" && document.visibilityState === "visible") requestDetails(sel.id);
+}, 4000);
+
+// ---------------------------------------------------------------- toasts
 export function toast(text, kind = "info", ms = 4000) {
   const box = $("#toasts");
   if (!box) return;
@@ -260,27 +305,232 @@ export function toast(text, kind = "info", ms = 4000) {
   while (box.children.length > 5) box.firstChild.remove();
 }
 
-// ---------------------------------------------------------------- selection / drawer
+// ---------------------------------------------------------------- selection
 export function select(sel) {      // { kind: "obj"|"sector", id, from }
   S.selected = sel;
+  if (sel && sel.kind === "obj") {
+    if (S.details[sel.id] === null) delete S.details[sel.id];
+    requestDetails(sel.id);
+  }
   bus.emit("select", sel);
 }
 
-// ---------------------------------------------------------------- in-game hotkeys
-const HK_HU = {
-  panel_next: "következő panel", view_toggle: "galaxis / szektor", zoom_in: "nagyítás", zoom_out: "kicsinyítés",
-  ship_next: "következő saját hajó", ship_prev: "előző saját hajó", log_down: "napló lejjebb", log_up: "napló feljebb",
-  show_selected: "kijelölt objektum", auto: "automata kijelző", ack_alerts: "riasztások nyugtázva",
+// ---------------------------------------------------------------- modules, views, layout
+const MODULES = [
+  { id: "map", title: "Térkép", icon: "map" },
+  { id: "objects", title: "Objektumok", icon: "objects" },
+  { id: "info", title: "Info", icon: "info" },
+  { id: "property", title: "Tulajdon", icon: "ships" },
+  { id: "log", title: "Napló", icon: "log" },
+  { id: "missions", title: "Küldetések", icon: "missions" },
+  { id: "factions", title: "Frakciók", icon: "factions" },
+  { id: "economy", title: "Gazdaság", icon: "economy" },
+  { id: "diag", title: "Állapot", icon: "status" },
+  { id: "hotkeys", title: "Gyorsgombok", icon: "keyboard" },
+];
+const PRESETS = {
+  nav: { label: "Navigáció", mods: { map: [0, 0, 8, 12], objects: [8, 0, 4, 6], info: [8, 6, 4, 6] } },
+  fleet: { label: "Flotta", mods: { map: [0, 0, 6, 12], property: [6, 0, 6, 7], info: [6, 7, 3, 5], log: [9, 7, 3, 5] } },
+  combat: { label: "Harc", mods: { map: [0, 0, 8, 12], objects: [8, 0, 4, 5], info: [8, 5, 4, 4], log: [8, 9, 4, 3] } },
+  all: { label: "Minden", mods: { map: [0, 0, 6, 7], objects: [6, 0, 3, 4], info: [9, 0, 3, 4], property: [6, 4, 6, 3],
+                                 log: [0, 7, 4, 5], missions: [4, 7, 3, 5], factions: [7, 7, 3, 5], economy: [10, 7, 2, 5] } },
 };
+// navigation: 1-8; "map" and "galaxy" show the workspace, the others one module full size
+const VIEWS = [
+  { id: "map", label: "Térkép", icon: "map", key: "1" }, { id: "galaxy", label: "Galaxis", icon: "galaxy", key: "2" },
+  { id: "property", label: "Tulajdon", icon: "ships", key: "3" }, { id: "log", label: "Napló", icon: "log", key: "4" },
+  { id: "missions", label: "Küldetések", icon: "missions", key: "5" }, { id: "factions", label: "Frakciók", icon: "factions", key: "6" },
+  { id: "economy", label: "Gazdaság", icon: "economy", key: "7" }, { id: "diag", label: "Állapot", icon: "status", key: "8" },
+];
+const layoutCfg = loadSettings("layout", { font: 100, view: "map" });
+let dock = null, map = null, view = "map", lastList = "objects";
+
+function setView(id) {
+  if (!VIEWS.some((v) => v.id === id) && !MODULES.some((m) => m.id === id)) id = "map";
+  view = id;
+  if (id === "map" || id === "galaxy") {
+    dock.unfocus();
+    if (map) map.setMode(id === "galaxy" ? "galaxy" : "sector");
+  } else {
+    dock.focus(id);
+    if (P.LISTS[id]) lastList = id;
+  }
+  layoutCfg.view = id; saveSettings("layout", layoutCfg);
+  renderNav();
+}
+function viewStep(d) {
+  const i = Math.max(0, VIEWS.findIndex((v) => v.id === view));
+  setView(VIEWS[(i + d + VIEWS.length) % VIEWS.length].id);
+}
+function renderNav() {
+  const mapMode = map ? map.mode : "sector";
+  const active = (view === "map" || view === "galaxy") ? (mapMode === "galaxy" ? "galaxy" : "map") : view;
+  for (const b of $$("#views .view")) {
+    const on = b.dataset.view === active;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  document.body.classList.toggle("on-map", view === "map" || view === "galaxy");
+  renderModulesMenu();
+}
+const badges = {};
+function setBadge(id, n, alert) {
+  badges[id] = { n, alert };
+  const b = $(`#views .view[data-view="${id}"] .vbadge`);
+  if (b) { b.textContent = n ? (n > 99 ? "99+" : String(n)) : ""; b.classList.toggle("alert", !!alert); }
+}
+
+function renderModulesMenu() {
+  const pop = $("#menu-modules .menu-pop");
+  if (!pop || !dock) return;
+  pop.replaceChildren(...MODULES.map((m) => {
+    const vis = !dock.layout.mods[m.id].hidden;
+    const b = el("button", { class: "menu-item" + (vis ? " on" : ""), onclick: () => { dock.toggle(m.id); if (view !== "map" && view !== "galaxy") setView("map"); renderModulesMenu(); } });
+    b.append(el("span", { class: "check" }, vis ? "✓" : ""), iconEl(m.icon, 15), el("span", {}, m.title));
+    return b;
+  }), el("div", { class: "menu-sep" }), el("div", { class: "menu-hint" }, "Modul: fejléc húzása = mozgatás, szél húzása = méret, dupla katt = teljes méret"));
+}
+function buildLayoutMenu() {
+  const pop = $("#menu-layout .menu-pop");
+  pop.replaceChildren(...Object.entries(PRESETS).map(([k, p]) => el("button", { class: "menu-item", onclick: () => { dock.applyPreset(k); setView("map"); closeMenus(); toast("Elrendezés: " + p.label, "info", 1500); } }, p.label)),
+    el("div", { class: "menu-sep" }),
+    el("button", { class: "menu-item", onclick: () => { dock.reset(); setView("map"); closeMenus(); toast("Elrendezés alaphelyzetben", "info", 1500); } }, "Alaphelyzet"));
+}
+function closeMenus() { for (const p of $$(".menu-pop")) p.hidden = true; }
+
+function buildLayout() {
+  document.documentElement.style.fontSize = (layoutCfg.font || 100) + "%";
+  const ctx = { S, bus, select, sectorName, factionName, command, watchSector, whereText, yawConvention, send, setBadge,
+                details: (id) => S.details[id], centerOn: (id) => { setView("map"); map && map.centerOn(id); },
+                getMapSid: () => (map ? map.currentSid() : (S.player && S.player.sector ? S.player.sector.id : null)),
+                infoVisible: () => dock && dock.isVisible("info") };
+  const mounts = {
+    map: (mod) => { map = new MapView(mod, { S, bus, select, sectorName, factionName, watchSector, headingOf, whereText }); window.__x4map = map; },
+    objects: (mod) => P.mountObjects(mod, ctx), info: (mod) => P.mountInfo(mod, ctx), property: (mod) => P.mountProperty(mod, ctx),
+    log: (mod) => P.mountLog(mod, ctx), missions: (mod) => P.mountMissions(mod, ctx), factions: (mod) => P.mountFactions(mod, ctx),
+    economy: (mod) => P.mountEconomy(mod, ctx), diag: (mod) => P.mountDiag(mod, ctx), hotkeys: (mod) => P.mountHotkeys(mod, ctx),
+  };
+  dock = new Dock($("#work"), MODULES.map((m) => ({ ...m, mount: mounts[m.id] })),
+    { presets: Object.fromEntries(Object.entries(PRESETS).map(([k, p]) => [k, p])), defaultPreset: "nav", single: SINGLE,
+      onChange: () => { renderNav(); bus.emit("layout"); } });
+  window.__x4dock = dock;
+  P.mountDrawer($("#drawer"), ctx);
+
+  // navigation
+  const views = $("#views");
+  for (const v of VIEWS) {
+    const b = el("button", { class: "view", role: "tab", "data-view": v.id, title: `${v.label} (${v.key})`, onclick: () => setView(v.id) });
+    b.append(iconEl(v.icon, 17), el("span", { class: "vlabel" }, v.label), el("kbd", {}, v.key), el("span", { class: "vbadge" }));
+    views.appendChild(b);
+  }
+  const back = el("button", { class: "backmap", title: "Vissza a térképre (Esc)", onclick: () => { setView("map"); } });
+  back.append(iconEl("back", 16), el("span", {}, "Vissza a térképre"));
+  views.after(back);
+  for (const m of $$(".menu")) {
+    m.querySelector(".menu-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pop = m.querySelector(".menu-pop");
+      const was = pop.hidden;
+      closeMenus();
+      pop.hidden = !was;
+    });
+  }
+  document.addEventListener("click", (e) => { if (!e.target.closest(".menu")) closeMenus(); });
+  buildLayoutMenu();
+  bus.on("mapmode", () => { if (view === "map" || view === "galaxy") { view = map.mode === "galaxy" ? "galaxy" : "map"; } renderNav(); });
+
+  $("#btn-help").appendChild(iconEl("keyboard", 17));
+  $("#btn-help").addEventListener("click", () => setView("hotkeys"));
+  $("#btn-control").addEventListener("click", () => {
+    if (!S.control && !confirm("Vezérlés engedélyezése: a böngészőből parancsokat küldhetsz a játéknak (térkép megnyitása, célpont, útvonal; a mod engedélyezőlistája szerint). Bekapcsolod?")) return;
+    setControl(!S.control);
+  });
+  $("#btn-font").addEventListener("click", () => {
+    const steps = [90, 100, 112, 125, 140];
+    layoutCfg.font = steps[(steps.indexOf(layoutCfg.font) + 1) % steps.length] || 100;
+    document.documentElement.style.fontSize = layoutCfg.font + "%";
+    saveSettings("layout", layoutCfg);
+    bus.emit("resize");
+  });
+  if (SINGLE) {
+    document.body.classList.add("single");
+    document.title = "X4 Companion – " + ((MODULES.find((m) => m.id === SINGLE) || {}).title || SINGLE);
+  }
+  setView(SINGLE ? "map" : (layoutCfg.view || "map"));
+
+  // keyboard
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA")) {
+      if (e.key === "Escape") e.target.blur();
+      return;
+    }
+    const v = VIEWS.find((x) => x.key === e.key);
+    if (v && !SINGLE) { e.preventDefault(); setView(v.id); return; }
+    switch (e.key) {
+      case "Escape":
+        if (view !== "map" && view !== "galaxy") setView("map");
+        else if (S.selected) select(null);
+        else bus.emit("auto");
+        break;
+      case "+": case "=": case "Add": bus.emit("hotkey", { action: "zoom_in" }); break;
+      case "-": case "_": case "Subtract": bus.emit("hotkey", { action: "zoom_out" }); break;
+      case "0": bus.emit("hotkey", { action: "zoom_fit" }); break;
+      case "g": bus.emit("hotkey", { action: "view_toggle" }); break;
+      case "a": bus.emit("auto"); break;
+      case "n": onHotkey({ action: "ship_next", local: true }); break;
+      case "N": onHotkey({ action: "ship_prev", local: true }); break;
+      case "ArrowDown": if (activeList()) { e.preventDefault(); activeList().move(1); } break;
+      case "ArrowUp": if (activeList()) { e.preventDefault(); activeList().move(-1); } break;
+      case "Enter": if (activeList()) { e.preventDefault(); activeList().activate(); } break;
+      case "/": { e.preventDefault(); setView("property"); const s = $('.mod[data-id="property"] input[type=search]'); if (s) s.focus(); break; }
+      case "?": setView("hotkeys"); break;
+      default: break;
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const mod = e.target.closest && e.target.closest(".mod");
+    if (mod && P.LISTS[mod.dataset.id]) lastList = mod.dataset.id;
+  }, true);
+}
+
+function activeList() {
+  if (view !== "map" && view !== "galaxy" && P.LISTS[view]) return P.LISTS[view];
+  if (P.LISTS[lastList] && dock.isVisible(lastList)) return P.LISTS[lastList];
+  for (const id of ["objects", "property", "log", "missions"]) if (P.LISTS[id] && dock.isVisible(id)) return P.LISTS[id];
+  return null;
+}
+
+// ---------------------------------------------------------------- in-game hotkeys
+const HK_HU = Object.fromEntries(P.HOTKEY_HELP.map(([id, name]) => [id, name.replace("Companion: ", "")]));
+let alertIdx = -1;
 function onHotkey(m) {
-  toast("Gyorsgomb: " + (HK_HU[m.action] || m.action), "info", 1800);
-  bus.emit("hotkey", m);
+  if (!m.local) toast("Gyorsgomb: " + (HK_HU[m.action] || m.action), "info", 1600);
+  bus.emit("hotkeyraw", m);
   switch (m.action) {
-    case "panel_next": sideNext(); break;
-    case "ack_alerts": P.markAllRead(); break;
-    case "auto": select(null); bus.emit("auto"); break;
+    case "panel_next": viewStep(1); break;
+    case "view_prev": viewStep(-1); break;
+    case "view_map": setView("map"); break;
+    case "view_toggle": if (view !== "map" && view !== "galaxy") setView("map"); bus.emit("hotkey", m); break;
+    case "zoom_in": case "zoom_out": case "zoom_fit": if (view !== "map" && view !== "galaxy") setView("map"); bus.emit("hotkey", m); break;
+    case "log_down": case "log_up": { const l = activeList(); if (l) l.move(m.action === "log_down" ? 1 : -1); break; }
+    case "list_select": { const l = activeList(); if (l) l.activate(); break; }
+    case "details": dock.toggle("info"); if (view !== "map" && view !== "galaxy") setView("map"); break;
+    case "alert_next": {
+      const al = P.alertEntries().filter((e) => e.ic);
+      if (!al.length) { toast("Nincs riasztás objektummal", "info", 1500); break; }
+      alertIdx = (alertIdx + 1) % al.length;
+      const e = al[al.length - 1 - alertIdx];
+      setView("map");
+      select({ kind: "obj", id: String(e.ic), from: "hotkey" });
+      toast("Riasztás: " + (e.ti || ""), "warn", 3000);
+      break;
+    }
+    case "ack_alerts": P.markAllRead(); $("#alertbanner").hidden = true; break;
+    case "auto": select(null); setView("map"); bus.emit("auto"); break;
     case "show_selected":
-      if (m.obj) select({ kind: "obj", id: String(m.obj), from: "hotkey" });
+      if (m.obj) { setView("map"); select({ kind: "obj", id: String(m.obj), from: "hotkey" }); }
+      else toast("A játékban nincs kijelölt / célzott objektum", "info", 1500);
       break;
     case "ship_next": case "ship_prev": {
       const ids = P.shipOrder();
@@ -288,30 +538,13 @@ function onHotkey(m) {
       const cur = S.selected && S.selected.kind === "obj" ? ids.indexOf(S.selected.id) : -1;
       const d = m.action === "ship_next" ? 1 : -1;
       const i = cur < 0 ? (d > 0 ? 0 : ids.length - 1) : (cur + d + ids.length) % ids.length;
+      if (view !== "map" && view !== "galaxy" && view !== "property") setView("map");
       select({ kind: "obj", id: ids[i], from: "hotkey" });
       break;
     }
-    default: break;   // view/zoom/log handled by the map / log panel listeners
+    default: break;
   }
 }
-
-// ---------------------------------------------------------------- side tabs
-const SIDE_TABS = [["log", "Napló"], ["missions", "Küldetések"], ["factions", "Frakciók"], ["economy", "Gazdaság"], ["diag", "Állapot"]];
-const layoutCfg = loadSettings("layout", { side: "log", font: 100, auto: true });
-let sideTab = layoutCfg.side;
-function setSide(tab) {
-  sideTab = tab;
-  layoutCfg.side = tab;
-  saveSettings("layout", layoutCfg);
-  for (const b of $$("#sidetabs button")) b.classList.toggle("on", b.dataset.tab === tab);
-  for (const p of $$("#side .tabpanel")) p.hidden = p.dataset.tab !== tab;
-  bus.emit("sidetab", tab);
-}
-function sideNext() {
-  const i = SIDE_TABS.findIndex(([k]) => k === sideTab);
-  setSide(SIDE_TABS[(i + 1) % SIDE_TABS.length][0]);
-}
-export function showSide(tab) { setSide(tab); }
 
 // ---------------------------------------------------------------- top bar
 function renderTop() {
@@ -319,13 +552,13 @@ function renderTop() {
   const o = p && p.object;
   const st = S.status;
   const state = !S.wsOpen ? "noserver" : (st ? st.game : "disconnected");
-  const STATE_HU = { live: "élő", paused: "játék szünetel", background: "játék háttérben", disconnected: "nincs kapcsolat a játékkal",
-                     connected: "csatlakozva, adatra vár", noserver: "nincs kapcsolat a szerverrel" };
+  const STATE_HU = { live: "élő", paused: "szünet", background: "háttérben", disconnected: "nincs játék",
+                     connected: "adatra vár", noserver: "nincs szerver" };
   document.body.dataset.state = state;
   $("#st-state").textContent = STATE_HU[state] || state;
   $("#st-state").className = "pill " + ({ live: "ok", paused: "warn", background: "warn", connected: "warn" }[state] || "bad");
   const age = st && st.last_rx_age;
-  $("#st-age").textContent = age === null || age === undefined ? "" : (age < 2 ? "" : `utolsó adat ${num(age)} mp`);
+  $("#st-age").textContent = age === null || age === undefined ? "" : (age < 2 ? "" : `${num(age)} mp`);
   $("#st-name").textContent = p ? (p.name || "–") : "–";
   $("#st-money").textContent = p ? money(p.money) : "–";
   $("#st-sector").textContent = p && p.sector ? p.sector.name : "–";
@@ -336,17 +569,16 @@ function renderTop() {
   const sp = (o && typeof o.speed === "number") ? o.speed : S.speedEst;
   $("#st-speed").textContent = sp === null || sp === undefined ? "–" : num(sp) + " m/s";
   const t = p && p.target;
-  $("#st-target").textContent = t ? `${t.name || "?"} · ${dist(t.dist)}${t.hull !== undefined && t.hull !== null ? " · " + num(t.hull) + "%" : ""}` : "nincs célpont";
+  $("#st-target").textContent = t ? `${t.name || "?"} · ${dist(t.dist)}${t.hull !== undefined && t.hull !== null ? " · " + num(t.hull) + "%" : ""}` : "nincs";
   $("#st-target").className = t ? (t.hostile ? "hostile" : t.enemy ? "enemy" : "") : "muted";
-  $("#st-mission").textContent = p && p.mission ? (p.mission.name || "küldetés") : "";
 }
 export function whereText(w) {
   if (!w) return "";
   const n = w.name || "?";
-  const dock = w.docked ? `, dokkolva: ${w.docked}` : "";
+  const dock2 = w.docked ? `, dokkolva: ${w.docked}` : "";
   switch (w.mode) {
-    case "pilot": return `Pilóta: ${n}${dock}`;
-    case "passenger": return `Utas: ${n} fedélzetén${dock}`;
+    case "pilot": return `Pilóta: ${n}${dock2}`;
+    case "passenger": return `Utas: ${n} fedélzetén${dock2}`;
     case "station": return `Gyalog: ${n} állomáson`;
     case "aboard": return `Gyalog: ${n} fedélzetén`;
     case "spacesuit": return "Űrruhában";
@@ -360,95 +592,36 @@ function setBar(sel, v) {
   e.firstChild.style.width = pct + "%";
   e.title = v === null || v === undefined ? "–" : num(v) + " %";
 }
-
 function renderControl() {
   const b = $("#btn-control");
   b.classList.toggle("on", S.control);
-  b.textContent = S.control ? "Vezérlés: BE" : "Vezérlés engedélyezése";
+  b.textContent = S.control ? "Vezérlés: BE" : "Vezérlés";
   document.body.classList.toggle("control", S.control);
 }
 
-// ---------------------------------------------------------------- alert banner (no sound, visual only)
+// ---------------------------------------------------------------- alert banner (visual only)
 function showAlert(items) {
   const last = items[items.length - 1];
   const bn = $("#alertbanner");
-  bn.textContent = "⚠ " + (last.ti || "Riasztás") + (items.length > 1 ? `  (+${items.length - 1})` : "");
+  bn.replaceChildren(iconEl("alert", 16), el("span", {}, (last.ti || "Riasztás") + (items.length > 1 ? `  (+${items.length - 1})` : "")));
   bn.hidden = false;
+  bn.onclick = () => { bn.hidden = true; if (last.ic) { setView("map"); select({ kind: "obj", id: String(last.ic), from: "alert" }); } else setView("log"); };
   bn.classList.remove("flash"); void bn.offsetWidth; bn.classList.add("flash");
   clearTimeout(showAlert.t);
   showAlert.t = setTimeout(() => { bn.hidden = true; }, 12000);
-  if (layoutCfg.auto && !SINGLE) {
-    if (sideTab !== "log") { showAlert.prevTab = sideTab; setSide("log"); setTimeout(() => { if (showAlert.prevTab) setSide(showAlert.prevTab); showAlert.prevTab = null; }, 15000); }
-    P.focusLogCategory("alerts");
-  }
 }
 
-// ---------------------------------------------------------------- layout
-function buildLayout() {
-  document.documentElement.style.fontSize = (layoutCfg.font || 100) + "%";
-  const side = $("#side");
-  const tabs = $("#sidetabs");
-  for (const [k, label] of SIDE_TABS) {
-    tabs.appendChild(el("button", { "data-tab": k, onclick: () => setSide(k), title: "Panel: " + label }, label));
-    side.appendChild(el("div", { class: "tabpanel", "data-tab": k, hidden: true }));
-  }
-  const map = new MapView($("#map-panel"), { S, bus, select, sectorName, factionName, watchSector, headingOf, whereText, single: SINGLE === "map" });
-  window.__x4map = map;
-  P.mountProperty($("#property-panel"), { S, bus, select, sectorName, factionName });
-  P.mountLog($('#side .tabpanel[data-tab="log"]'), { S, bus, select });
-  P.mountMissions($('#side .tabpanel[data-tab="missions"]'), { S, bus, select, sectorName, factionName, command });
-  P.mountFactions($('#side .tabpanel[data-tab="factions"]'), { S, bus });
-  P.mountEconomy($('#side .tabpanel[data-tab="economy"]'), { S, bus });
-  P.mountDiag($('#side .tabpanel[data-tab="diag"]'), { S, bus, yawConvention, send });
-  P.mountDrawer($("#drawer"), { S, bus, select, sectorName, factionName, command, watchSector });
-  setSide(sideTab);
-
-  for (const b of $$(".popout")) {
-    b.addEventListener("click", () => {
-      const panel = b.dataset.panel === "side" ? sideTab : b.dataset.panel;
-      window.open(`/?panel=${panel}`, "x4c_" + panel, "width=1200,height=900");
-    });
-  }
-  $("#btn-control").addEventListener("click", () => {
-    if (!S.control && !confirm("Vezérlés engedélyezése: a böngészőből parancsokat küldhetsz a játéknak (térkép megnyitása, célpont, útvonal; a mod engedélyezőlistája szerint). Bekapcsolod?")) return;
-    setControl(!S.control);
-  });
-  $("#btn-auto").classList.toggle("on", layoutCfg.auto);
-  $("#btn-auto").addEventListener("click", () => {
-    layoutCfg.auto = !layoutCfg.auto; saveSettings("layout", layoutCfg);
-    $("#btn-auto").classList.toggle("on", layoutCfg.auto);
-    bus.emit("autocfg", layoutCfg.auto);
-  });
-  $("#btn-font").addEventListener("click", () => {
-    const steps = [90, 100, 112, 125, 140];
-    layoutCfg.font = steps[(steps.indexOf(layoutCfg.font) + 1) % steps.length] || 100;
-    document.documentElement.style.fontSize = layoutCfg.font + "%";
-    saveSettings("layout", layoutCfg);
-    bus.emit("resize");
-  });
-  if (SINGLE) {
-    document.body.classList.add("single");
-    const map = { map: "#map-panel", property: "#property-panel", player: "#topbar" };
-    if (map[SINGLE]) document.body.dataset.single = SINGLE;
-    else if (SIDE_TABS.some(([k]) => k === SINGLE)) { document.body.dataset.single = "side"; setSide(SINGLE); }
-    document.title = "X4 Companion – " + SINGLE;
-  }
-
-  // keyboard: "/" search, Esc close drawer, g/s map view, +/- zoom, f auto-follow
-  window.addEventListener("keydown", (e) => {
-    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA")) {
-      if (e.key === "Escape") e.target.blur();
-      return;
-    }
-    if (e.key === "/") { e.preventDefault(); const s = $("#property-panel input[type=search]"); if (s) s.focus(); }
-    else if (e.key === "Escape") select(null);
-    else if (e.key === "g") bus.emit("hotkey", { action: "view_toggle" });
-    else if (e.key === "+" || e.key === "=") bus.emit("hotkey", { action: "zoom_in" });
-    else if (e.key === "-") bus.emit("hotkey", { action: "zoom_out" });
-    else if (e.key === "a") bus.emit("auto");
-    else if (e.key === "n") onHotkey({ action: "ship_next" });
-    else if (e.key === "Tab" && !SINGLE) { e.preventDefault(); sideNext(); }
-  });
+// ---------------------------------------------------------------- icons exported from the game
+async function loadIcons() {
+  try {
+    const r = await fetch("/icons/index.json", { cache: "no-cache" });
+    const d = await r.json();
+    const names = Object.keys(d.icons || {});
+    S.icons = names.length;
+    setIconIndex(names.length ? names : null, throttle(() => bus.emit("icons"), 250));
+    if (!names.length) toast("A játék térképikonjai nincsenek exportálva (export_icons.py) – rajzolt helyettesítők látszanak.", "warn", 8000);
+  } catch (e) { setIconIndex(null); }
+  bus.emit("icons");
 }
 
 bus.on("player", throttle(renderTop, 200));
@@ -456,7 +629,7 @@ bus.on("status", renderTop);
 bus.on("ws", renderTop);
 bus.on("control", renderControl);
 bus.on("alert", showAlert);
-bus.on("sectorchange", ({ to }) => toast("Ugrás: " + (to.name || "új szektor"), "info", 3500));
+bus.on("sectorchange", ({ to }) => toast("Ugrás: " + (to.name || "új szektor"), "info", 3000));
 bus.on("gamestate", (g) => {
   if (g === "background") toast("A játék háttérben van vagy megállt – az utolsó ismert adatok látszanak.", "warn", 6000);
 });
@@ -464,5 +637,6 @@ bus.on("gamestate", (g) => {
 buildLayout();
 renderTop();
 renderControl();
+loadIcons();
 connect();
 setInterval(renderTop, 1000);

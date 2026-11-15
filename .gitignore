@@ -2,6 +2,8 @@
 __pycache__/
 logs/
 state/
-# exported from the game's own map files - regenerate locally with export_static.py, never commit game data
+# game data exported locally from the user's own installation - never commit or redistribute
+data/icons/
 static_map.json
+data/
 *.pyc

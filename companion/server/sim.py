@@ -123,6 +123,32 @@ class SnLikeClient:
             self.h = None
 
 
+# the game's icon ids (libraries\icons.xml, map legend menu_map.lua:1543-1637) the bridge would report
+SHIP_ICONS = {
+    ("ship_xs", "fight"): "ship_xs_drone_fight_01", ("ship_xs", "trade"): "ship_xs_drone_trade_01",
+    ("ship_xs", "build"): "ship_xs_drone_build_01", ("ship_xs", "mine"): "ship_xs_personalvehicle_01",
+    ("ship_s", "fight"): "ship_s_fighter_01", ("ship_s", "trade"): "ship_s_courier_01", ("ship_s", "mine"): "ship_s_miner_01",
+    ("ship_s", "build"): "ship_s_scout_01", ("ship_s", "auxiliary"): "ship_s_heavyfighter_01",
+    ("ship_m", "fight"): "ship_m_corvette_01", ("ship_m", "trade"): "ship_m_transporter_01", ("ship_m", "mine"): "ship_m_miner_01",
+    ("ship_m", "build"): "ship_m_tug_01", ("ship_m", "auxiliary"): "ship_m_frigate_01",
+    ("ship_l", "fight"): "ship_l_destroyer_01", ("ship_l", "trade"): "ship_l_freighter_01", ("ship_l", "mine"): "ship_l_miner_01",
+    ("ship_l", "build"): "ship_l_scavenger_01", ("ship_l", "auxiliary"): "ship_l_carrier_01",
+    ("ship_xl", "fight"): "ship_xl_battleship_01", ("ship_xl", "trade"): "ship_xl_freighter_01", ("ship_xl", "mine"): "ship_xl_carrier_01",
+    ("ship_xl", "build"): "ship_xl_builder_01", ("ship_xl", "auxiliary"): "ship_xl_resupplier_01",
+}
+STATION_ICONS = ["mapob_tradestation", "mapob_shipyard", "mapob_wharf", "mapob_equipmentdock", "mapob_defensestation",
+                 "mapob_factory", "mapob_energy", "mapob_food", "mapob_refined", "mapob_hightech", "mapob_piratestation"]
+OTHER_ICONS = {"gate": "mapob_jumpgate", "highwayentrygate": "mapob_superhighway", "satellite": "mapob_satellite_01",
+               "navbeacon": "mapob_navbeacon", "resourceprobe": "mapob_resourceprobe", "lockbox": "mapob_lockbox",
+               "collectablewares": "mapob_collectablewarecontainer", "mine": "mapob_mine"}
+# NOT the game's values: the real ones come from GetHoloMapColors() at runtime (helper.lua:13070).
+# Rough look-alikes so the simulator shows a coloured map; the dashboard never uses these in the game.
+SIM_HOLO = {"playercolor": (0, 255, 162), "friendcolor": (153, 204, 255), "enemycolor": (255, 128, 0),
+            "hostilecolor": (255, 32, 32), "missioncolor": (255, 192, 0), "currentplayershipcolor": (255, 255, 255),
+            "gatecolor": (255, 255, 255), "highwaygatecolor": (64, 160, 255), "superhighwaycolor": (64, 160, 255),
+            "highwaycolor": (90, 140, 200), "radarcolor": (40, 90, 160), "visitorcolor": (200, 120, 255), "missilecolor": (255, 64, 64)}
+
+
 def jd(o) -> str:
     return json.dumps(o, separators=(",", ":"), ensure_ascii=False)
 
@@ -194,6 +220,7 @@ class World:
                 owner = s["owner"] or r.choice(["xenon", "buccaneers", "loanshark"])
                 o = self._obj(sid, "station", owner, self._name("st"), r.uniform(-150000, 150000), r.uniform(-150000, 150000))
                 o["code"] = self._code()
+                o["ic"] = r.choice(STATION_ICONS)
                 if sid not in self.known or r.random() < 0.2:
                     o["unknown"] = True
                     o["n"] = "SECRET station " + o["n"]
@@ -202,7 +229,7 @@ class World:
         for i in range(max(3, nships // 16)):
             sid = r.choice(self.home if r.random() < 0.7 else sids)
             o = self._obj(sid, "station", "player", f"Saját állomás {i + 1} {self._quoted()}", r.uniform(-120000, 120000), r.uniform(-120000, 120000))
-            o.update(code=self._code(), money=r.randint(100000, 50000000), mods=r.randint(4, 60),
+            o.update(code=self._code(), money=r.randint(100000, 50000000), mods=r.randint(4, 60), ic=r.choice(STATION_ICONS[:6]), rr=50000,
                      wf=r.randint(0, 900), wfc=r.choice([0, 500, 1000]))
             self.stations[o["id"]] = o
         # player ships
@@ -216,7 +243,9 @@ class World:
                 name = f'"{name}" ékezet @@BAD{i % 3}@@'
             o = self._obj(sid, cls, "player", name, r.uniform(-120000, 120000), r.uniform(-120000, 120000))
             od = r.choice(ORDERS)
-            o.update(code=self._code(), p=r.choice(PURPOSES), hull=r.randint(40, 100), shield=r.randint(0, 100),
+            pur = r.choice(PURPOSES)
+            o.update(code=self._code(), p=pur, ic=SHIP_ICONS.get((cls, pur)), rr=40000 if cls in ("ship_s", "ship_xs") else 50000,
+                     hull=r.randint(40, 100), shield=r.randint(0, 100),
                      od=od[0], on=od[1], os=od[2], oq=r.randint(0, 4), mc=f"ship_gen_{cls[5:]}_{r.choice(['trans', 'miner', 'fighter'])}_01_a_macro",
                      vx=r.uniform(-150, 150), vz=r.uniform(-150, 150))
             if cls in ("ship_l", "ship_xl") and r.random() < 0.5:
@@ -230,7 +259,8 @@ class World:
         # player
         start = self.home[0]
         self.player_ship = self._obj(start, "ship_m", "player", "Játékos hajója", 0.0, 0.0)
-        self.player_ship.update(code="PLY-001", hull=93.0, shield=100.0)
+        self.player_ship.update(code="PLY-001", hull=93.0, shield=100.0, ic="ship_m_corvette_01", rr=40000)
+        self.guidance = None
         self.player_sector = start
         self.player_target_gate = None
         self.target = None
@@ -283,6 +313,7 @@ class World:
         ang = math.atan2(o["gx"] - s["gx"], o["gz"] - s["gz"])
         dist = 180000 if kind == "gate" else 90000
         g = self._obj(sid, kind, "ownerless", "Ugrókapu" if kind == "gate" else "Szupersztráda", dist * math.sin(ang), dist * math.cos(ang))
+        g["ic"] = OTHER_ICONS[kind]
         g["ds"] = other
         return g
 
@@ -296,10 +327,17 @@ class World:
             owner = s["owner"] if (s["owner"] and r.random() < 0.6) else r.choice(FACTION_IDS)
             cls = self._wchoice(SHIP_CLASSES)
             o = self._obj(sid, cls, owner, f"{r.choice(NAMES)} ({owner})", r.uniform(-200000, 200000), r.uniform(-200000, 200000))
-            o.update(code=self._code(), p=r.choice(PURPOSES), hull=r.randint(30, 100), vx=r.uniform(-300, 300), vz=r.uniform(-300, 300))
-        for _ in range(r.randint(0, 6)):
-            self._obj(sid, r.choice(["satellite", "navbeacon", "resourceprobe", "lockbox", "collectablewares"]),
-                      r.choice(["player", "ownerless"]), "Objektum", r.uniform(-150000, 150000), r.uniform(-150000, 150000))
+            pur = r.choice(PURPOSES)
+            o.update(code=self._code(), p=pur, ic=SHIP_ICONS.get((cls, pur)), hull=r.randint(30, 100), vx=r.uniform(-300, 300), vz=r.uniform(-300, 300))
+            if r.random() < 0.02:
+                o["mt"] = True
+        for _ in range(r.randint(2, 8)):
+            cls = r.choice(["satellite", "navbeacon", "resourceprobe", "lockbox", "collectablewares", "mine"])
+            own = cls in ("satellite", "resourceprobe", "navbeacon") and r.random() < 0.6
+            o = self._obj(sid, cls, "player" if own else "ownerless", "Objektum", r.uniform(-150000, 150000), r.uniform(-150000, 150000))
+            o["ic"] = OTHER_ICONS.get(cls)
+            if own and cls == "satellite":
+                o["rr"] = 30000
 
     def _missions(self) -> list[dict]:
         r = self.r
@@ -432,7 +470,7 @@ class World:
 class Bridge:
     """Mimics the Lua scheduler: per-channel intervals, chunking, diffs, resync, commands."""
 
-    INTERVALS = {"player": 0.25, "sector": 1.0, "property": 4.0, "logbook": 2.0, "ticker": 1.0, "messages": 5.0,
+    INTERVALS = {"player": 0.25, "theme": 30.0, "sector": 1.0, "property": 4.0, "logbook": 2.0, "ticker": 1.0, "messages": 5.0,
                  "missions": 3.0, "offers": 10.0, "factions": 20.0, "economy": 30.0, "stats": 2.0, "galaxy": 60.0}
 
     def __init__(self, world: World, cli: SnLikeClient, args):
@@ -449,7 +487,7 @@ class Bridge:
         self.gen = 0
         self.watch: str | None = None
         self.n_sector = 0
-        self.allow = {"resync", "watch", "reenable", "openmap", "select", "target", "guidance", "guidance_end"}
+        self.allow = {"resync", "watch", "reenable", "openmap", "select", "target", "guidance", "guidance_end", "details"}
         if args.allow_orders:
             self.allow |= {"stop", "flyto"}
         self.counts = {}
@@ -509,19 +547,30 @@ class Bridge:
              "sector": {"id": sec["id"], "name": sec["name"]},
              "object": {"id": p["id"], "mode": "ship", "x": round(p["x"]), "y": 0, "z": round(p["z"]), "yaw": round(p["yaw"], 4),
                         "name": p["n"], "class": "ship_m", "hull": p["hull"], "shield": p["shield"], "code": p["code"],
-                        "maxspeed": 520, "travelspeed": 4100, "speed": round(p.get("speed", 0), 1)},
+                        "maxspeed": 520, "travelspeed": 4100, "speed": round(p.get("speed", 0), 1), "ic": p["ic"], "rr": p["rr"]},
              "nframe": int(now * 60), "nmd": 0, "where": {"mode": "pilot", "name": p["n"]}}
         if w.target and w.target in w.objects[w.player_sector]:
             t = w.objects[w.player_sector][w.target]
             m["target"] = {"id": t["id"], "name": t["n"], "class": t["c"], "hull": t.get("hull"), "owner": t["o"],
                            "dist": round(math.hypot(t["x"] - p["x"], t["z"] - p["z"])), "x": round(t["x"]), "z": round(t["z"]),
                            "sector": w.player_sector}
+        if w.guidance:
+            g = next((objs[w.guidance] for objs in w.objects.values() if w.guidance in objs), None)
+            if g is None or g.get("unknown") or g["s"] not in w.known:
+                m["guidance"] = {"unknown": True}
+            else:
+                m["guidance"] = {"id": g["id"], "s": g["s"], "x": round(g["x"]), "z": round(g["z"]), "n": g["n"]}
         act = next((x for x in w.missions if x.get("act")), None)
         if act:
             m["mission"] = {"id": act["id"], "name": act["n"]}
         if self.watch:
             m["watch"] = self.watch
         self.send(m)
+
+    def ch_theme(self, now):
+        self.send({"type": "theme", "sim": True,
+                   "holo": {k: {"r": c[0], "g": c[1], "b": c[2], "a": 100} for k, c in SIM_HOLO.items()},
+                   "ui": {"text_normal": {"r": 255, "g": 255, "b": 255, "a": 100}, "text_inactive": {"r": 128, "g": 128, "b": 128, "a": 100}}})
 
     def ch_galaxy(self, now):
         self.gen += 1
@@ -566,8 +615,14 @@ class Bridge:
                 hidden += 1
                 continue
             e = {"id": o["id"], "c": o["c"], "n": o["n"], "o": o["o"], "x": round(o["x"]), "y": 0, "z": round(o["z"])}
+            if o.get("ic"):
+                e["ic"] = o["ic"]
+            if o.get("mt"):
+                e["mt"] = True
             if o["o"] == "player":
                 e["pl"] = True
+                if o.get("rr"):
+                    e["rr"] = o["rr"]
             if o["o"] in ("xenon", "khaak"):
                 e["h"] = True
             elif o["o"] in ("buccaneers", "scaleplate", "holyorder"):
@@ -597,10 +652,10 @@ class Bridge:
         items, ids = [], []
         for o in list(w.ships.values()) + list(w.stations.values()):
             if o["c"] == "station":
-                e = {"id": o["id"], "k": "station", "n": o["n"], "code": o["code"], "c": "station", "s": o["s"],
+                e = {"id": o["id"], "k": "station", "n": o["n"], "code": o["code"], "c": "station", "s": o["s"], "ic": o.get("ic"),
                      "hull": 100, "money": o["money"], "mods": o["mods"], "wf": o["wf"], "wfc": o["wfc"]}
             else:
-                e = {"id": o["id"], "k": "ship", "n": o["n"], "code": o["code"], "c": o["c"], "p": o["p"], "s": o["s"],
+                e = {"id": o["id"], "k": "ship", "n": o["n"], "code": o["code"], "c": o["c"], "p": o["p"], "s": o["s"], "ic": o.get("ic"),
                      "hull": o["hull"], "shield": o["shield"], "fl": o.get("fl"), "mc": o["mc"], "od": o["od"],
                      "on": o["on"], "os": o["os"], "oq": o["oq"], "cmd": o.get("cmd")}
             e = {k: v for k, v in e.items() if v is not None}
@@ -670,11 +725,13 @@ class Bridge:
     def ch_stats(self, now):
         r = self.w.r
         chs = {k: {"avg": round(r.uniform(0.002, 0.06), 4), "max": round(r.uniform(0.05, 0.5), 3), "pass": round(r.uniform(0.05, 3), 3),
+                   "ops": round(r.uniform(0.5, 20), 2), "pops": r.randint(5, 2500),
                    "iv": v, "err": 0, "runs": int(now / v)} for k, v in self.INTERVALS.items()}
         self.send({"type": "stats", "span": 2.0, "frames": 120, "frame": {"avg": round(r.uniform(0.08, 0.3), 4), "max": round(r.uniform(0.4, 0.9), 3)},
                    "ch": chs, "srcoff": [], "srcerr": {}, "pending": 0, "sent": sum(self.counts.values()), "bytes": self.nbytes,
                    "dropped": 0, "wfail": self.cli.failed, "cmds": self.cmds, "gates": "received", "ngates": len(self.w.gates),
-                   "hk": 11 if self.a.hotkeys else 0, "timer": "qpc", "nframe": int(now * 60), "nmd": 0, "watch": self.watch})
+                   "gates_md": len(self.w.gates), "gates_rx": len(self.w.gates), "gates_hw": 0,
+                   "hk": 17 if self.a.hotkeys else 0, "timer": "qpc", "hires": True, "nframe": int(now * 60), "nmd": 0, "watch": self.watch})
 
     # ---------------------------------------------------------------- commands
     def handle_cmd(self, line: str) -> None:
@@ -702,7 +759,41 @@ class Bridge:
             self.w.target = args[0]
             msg = "célpont beállítva"
         elif name in ("guidance", "guidance_end"):
+            self.w.guidance = args[0] if name == "guidance" else None
             msg = "útvonal beállítva" if name == "guidance" else "útvonal törölve"
+        elif name == "details":
+            o = None
+            for objs in self.w.objects.values():
+                if args and args[0] in objs:
+                    o = objs[args[0]]
+                    break
+            if o is None or o.get("unknown") or o["s"] not in self.w.known:
+                ok, msg = False, "nem látható objektum"
+            else:
+                r = self.w.r
+                d = {"type": "details", "seq": seq, "id": o["id"], "n": o["n"], "c": o["c"], "o": o["o"],
+                     "on": next((f[1] for f in FACTIONS if f[0] == o["o"]), o["o"]), "hull": o.get("hull"),
+                     "shield": o.get("shield"), "p": o.get("p"), "code": o.get("code"), "s": o["s"],
+                     "pl": True if o["o"] == "player" else None, "ic": o.get("ic"), "rr": o.get("rr")}
+                if o["c"].startswith("ship") or o["c"] == "station":
+                    own = o["o"] == "player"
+                    d["cwl"] = own or r.random() < 0.5
+                    d["cam"] = own
+                    if d["cwl"]:
+                        d["cargo"] = [{"w": w, "n": n, "a": r.randint(10, 9000) if own else None}
+                                      for w, n in r.sample([("energycells", "Energiacellák"), ("ore", "Érc"), ("silicon", "Szilícium"),
+                                                            ("water", "Víz"), ("foodrations", "Élelmiszer"), ("hullparts", "Hajótest-alkatrészek")], 3)]
+                if o.get("od"):
+                    d.update(od=o["od"], oname=o["on"], os=o["os"], oq=o.get("oq"))
+                    # order queue with map points (bridge: GetOrderParams position/object parameters)
+                    orders = []
+                    for i in range(max(1, o.get("oq") or 1)):
+                        pt = {"s": o["s"], "x": round(o["x"] + r.uniform(-60000, 60000)), "z": round(o["z"] + r.uniform(-60000, 60000))}
+                        orders.append({"d": o["od"] if i == 0 else "MoveWait", "n": o["on"] if i == 0 else "Repülés és várakozás",
+                                       "st": o["os"] if i == 0 else "", "pt": pt})
+                    d["orders"] = orders
+                self.send({k: v for k, v in d.items() if v is not None})
+                msg = "részletek"
         elif name == "stop":
             s = self.w.ships.get(args[0])
             if s:
@@ -725,8 +816,8 @@ class Bridge:
             if now - self.last_hello >= 2.0:
                 self.last_hello = now
                 self.session += 1
-                if self.send({"type": "hello", "mod": "x4_companion", "ver": "100", "session": self.session,
-                              "allow": sorted(self.allow), "hotkeys": 11 if self.a.hotkeys else 0,
+                if self.send({"type": "hello", "mod": "x4_companion", "ver": "110", "session": self.session,
+                              "allow": sorted(self.allow), "hotkeys": 17 if self.a.hotkeys else 0,
                               "loglib": True, "timer": "qpc"}):
                     self.connected = True
                     self.resync()
@@ -746,7 +837,8 @@ class Bridge:
             self.cli.write(b'[1,2,3]\n')
         if self.a.hotkeys and now - self.last_hotkey > 3.0:
             self.last_hotkey = now
-            acts = ["view_toggle", "zoom_in", "ship_next", "panel_next", "log_down", "zoom_out", "show_selected", "auto"]
+            acts = ["view_toggle", "zoom_in", "ship_next", "panel_next", "log_down", "zoom_out", "show_selected", "auto",
+                    "view_map", "zoom_fit", "list_select", "details", "alert_next"]
             act = acts[self.hotkey_i % len(acts)]
             self.hotkey_i += 1
             obj = None

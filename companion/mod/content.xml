@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- X4 Companion bridge (v1): streams player, galaxy, sector, property, logbook, missions,
+<!-- X4 Companion bridge (v1.1): streams player, galaxy, sector, property, logbook, missions,
      factions and economy data as JSON lines through the SirNukes named-pipe API to a local
      server (tools\x4companion), and accepts a small allow-listed set of UI commands back.
      UI-only, no game state: save="0" so it can be removed from a save at any time. -->
@@ -7,8 +7,8 @@
          name="X4 Companion Bridge"
          description="Second-screen browser companion (map, property, logbook, missions, factions) via SirNukes named pipes."
          author="local"
-         version="100"
-         date="2026-11-14"
+         version="110"
+         date="2026-11-15"
          save="0"
          enabled="1">
   <!-- id as declared in extensions\sn_mod_support_apis\content.xml (id="ws_2042901274", version="195") -->

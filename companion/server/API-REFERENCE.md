@@ -120,3 +120,44 @@ használható), ezért ez közelítés: a szabályok a vanilla menük *saját* s
 | `raise_lua_event name=… param="$komponens"` | md\cover.xml:397 |
 | `event_ui_triggered screen=… control=…` | md\rml_buildstation.xml:823; KNOWLEDGEBASE „event_ui_triggered round-trip” |
 | ütem: `cue instantiate="true" checkinterval="250ms"` | SN md\time_api.xml (MD_New_Frame) |
+
+## v1.1 – térkép-hűség, kapuk, időmérés (új hívások, mind pcall-ban)
+
+Hivatkozások: `ui\addons\ego_detailmonitor\menu_map.lua` = `menu_map.lua`, `ui\addons\ego_detailmonitorhelper\helper.lua` = `helper.lua`.
+
+| Hívás | vanilla bizonyíték | mire |
+|---|---|---|
+| `GetComponentData(obj, "icon")` | menu_map.lua:20051 (bármely kijelölt komponens fejléc-ikonja), :7301 (objektumlista sor), :13918 (hajó) | a játék saját térképikon-azonosítója (`ic`); hajóknál/állomásoknál az osztály-specifikus hívásba hajtva, más osztálynál külön hívás, és ha egy osztálynál hibázik, azt többé nem kérdezi |
+| `GetComponentData(obj, "ismissiontarget")` | menu_map.lua:7301, :7348 (→ `missioncolor`) | küldetés-célpont szín (`mt`) |
+| `GetComponentData(obj, "maxradarrange")` | menu_map.lua:13761, :14190 (hajó/állomás), :14944 (deployable: műhold, szonda) | saját objektumok radar-hatótávja (`rr`), objektumonként 60 mp-ig gyorsítótárazva |
+| `GetHoloMapColors()` (Lua globális, 22 visszatérési érték) | helper.lua:13069-13071 (`Helper.getHoloMapColors`), menu_map.lua:6311 | a játék térképének színei (`theme` üzenet): playercolor, friendcolor (= semleges, jelmagyarázat menu_map.lua:1547), enemycolor, hostilecolor, missioncolor, currentplayershipcolor, gatecolor, highwaygatecolor, superhighwaycolor, radarcolor… |
+| `Color["…"]` (globális tábla) | menu_map.lua:7317 (`Color["text_normal"]`), mappingek: `libraries\colors.xml` | UI-színek (text_normal, shieldhullbar_*) |
+| `GetActiveGuidanceMissionComponent()` | menu_map.lua:29546, menu_interactmenu.lua:1129 | a kijelölt útvonal (guidance) célja (`player.guidance`) |
+| `GetAutoPilotTarget()` | menu_map.lua:6734 | robotpilóta célja (`player.autopilot`) |
+| `GetOrderParams(ship, idx)` | menu_map.lua:11376; „position” paraméter = `{ space, {x,y,z} }`: menu_map.lua:26781 | saját hajó parancssorának térképpontjai (`details.orders[].pt`) |
+| `GetNPCBlackboard(player, "$var")` / `SetNPCBlackboard(player, "$var", nil)` | menu_map.lua:4137 / menu_trader_inventory.lua:538; ugyanez a minta: SN Mod Support APIs (pipe/hotkey API: MD ír, Lua olvas és nil-lel töröl) | a kapulista átvétele az MD-től egyetlen eseménnyel |
+| `ConvertStringTo64Bit(tostring(C.GetPlayerID()))` | SN Mod Support APIs (`L.player_id`), menu_map.lua (sok helyen) | a játékos blackboard-azonosítója |
+| `ffi.load("kernel32")` → `QueryPerformanceCounter/Frequency` | LuaJIT FFI (nem játékfüggvény) | nagy felbontású óra, ha az `ffi.C` útvonal nem működik (v1.0-ban a játékban nem működött) |
+
+**Időmérés (v1.1):** sorrend: `ffi.C` QPC → `ffi.load("kernel32")` QPC → `os.clock` → nincs („frame”). A forrás
+neve a `hello.timer` / `stats.timer` mezőben és az Állapot nézetben látszik. Óra nélkül a költség
+**motorhívásban** (az `S()`-en átmenő hívások száma, `ops`) mérődik csatornánként és képkockánként; a
+képkockánkénti keret ilyenkor `CFG.frame_budget_ops` (160 hívás), a ritkítás `budget × CFG.ops_per_ms` (150, becslés).
+
+**Kapuk (v1.1):** v1.0-ban a játékban egyetlen kapu érkezett a teljes galaxisra (`s:"242150"`, nem a játékos
+szektora) – az MD egy képkockán belül kapunként külön `raise_lua_event`-et adott. Bizonyíték: a mért 1 elem;
+a pontos mechanizmust (eseményösszevonás vagy paramétervesztés) a játékban nem ellenőriztük – a blackboard-átadás
+mindkettőt kikerüli, és a „stats” most megmutatja, hány kaput talált az MD és hányat vett át a Lua. Új mód: `md\x4_companion_gates.xml` a két listát a játékos blackboardjára
+teszi (`$x4companion_gates`, `$x4companion_hwgates`), egyetlen `x4companion.gates` eseményt küld, a Lua kiolvassa
+és törli; 5 mp után az MD is törli. A „stats” mutatja: `gates_md` (MD talált), `gates_rx` (átvett), `gates_hw`.
+A szektortérképen a kapuk addig is látszottak, mert a szektor-csatorna a játékos szektorának kapuit
+objektumként küldi; a galaxis-kapcsolatok a böngészőben mostantól a beolvasott szektorok kapuiból is épülnek.
+
+**Felfedezettségi hexek:** a játék térképe a radar által látott területet hex-lépcsős szélű világos foltként
+rajzolja; a „felfedezett hexek” adatát a 9.00 UI-Lua nem adja ki (nincs ilyen függvény a `ui\` alatt: keresve
+`fog`, `explor*`, `IsPositionKnown`, `reveal*` – csak a jelmagyarázat ikonja, menu_map.lua:1536). Ezért a
+Companion a saját objektumok pozíciójából és `maxradarrange`-éből számolja a hex-cellákat (közelítés).
+
+**Ikonok:** `export_icons.py` – `libraries\icons.xml` (alap + DLC + engedélyezett modok) név → textúra, a
+textúra a felhasználó saját `01..09.cat` / `ext_*.cat` / `subst_*.cat` katalógusaiból (`.gz` = gzip-be csomagolt
+DDS), Pillow-val PNG-be, `data\icons\` (git-ignored, játékadat, nem terjeszthető).

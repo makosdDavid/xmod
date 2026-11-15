@@ -84,8 +84,11 @@ end
 W.objs[520].known = false
 W.objs[520].name = "SECRET_SECTOR"
 addobj(W.sector, "argon", "station", "SECRET_STATION", { isknown = false })
-addobj(W.sector, "xenon", "ship_l", "SECRET_SHIP", { isinliveview = false, live = false })
-addobj(520, "argon", "station", "SECRET_STATION_2")
+W.secretship = addobj(W.sector, "xenon", "ship_l", "SECRET_SHIP", { isinliveview = false, live = false }).id
+MOCK.secretship = W.secretship
+for i = 1, 3 do addobj(W.sector, "player", "satellite", "Own Satellite " .. i) end
+for i = 1, 12 do addobj(W.sector, "ownerless", "navbeacon", "Beacon " .. i) end
+MOCK.secret2 = addobj(520, "argon", "station", "SECRET_STATION_2").id
 W.gates = {}
 do
     local a = addobj(501, "ownerless", "gate", "Gate to the unknown")
@@ -226,7 +229,8 @@ function GetClusters(known) local out = {}; for _, c in ipairs(W.clusters) do ou
 function GetSectors(c) local out = {}; for _, s in ipairs(W.sectors[idof(c)] or {}) do out[#out + 1] = ConvertStringToLuaID(tostring(s)) end; return out end
 local PROPS = { name = "name", idcode = "code", hullpercent = "hull", shieldpercent = "shield", owner = "owner", macro = "macro",
                 primarypurpose = "purpose", isplayerowned = "isplayerowned", isknown = "isknown", isinliveview = "isinliveview",
-                destination = "destination", isactive = "isactive", money = "money", assignedpilot = "assignedpilot" }
+                destination = "destination", isactive = "isactive", money = "money", assignedpilot = "assignedpilot",
+                ownername = "owner" }
 function GetComponentData(id, ...)
     count("GetComponentData")
     local o = W.objs[idof(id)]
@@ -243,7 +247,17 @@ function GetComponentData(id, ...)
         if p == "iswreck" then v = false end
         if p == "isactive" then v = true end
         if p == "isradarvisible" then v = true end
+        if p == "cargo" then v = { energycells = 120 + (idof(id) % 50), ore = 7 } end
         if p == "fleetname" then v = (idof(id) % 7 == 0) and "Alpha" or "" end
+        if p == "icon" then
+            if o.class == "navbeacon" then error("mock: icon not supported for this class") end
+            if o.class:sub(1, 5) == "ship_" then v = o.class .. "_trade_01"
+            elseif o.class == "station" then v = "mapob_tradestation"
+            elseif o.class == "gate" then v = "mapob_jumpgate"
+            elseif o.class == "satellite" then v = "mapob_satellite_01" end
+        end
+        if p == "ismissiontarget" then v = idof(id) % 13 == 0 end
+        if p == "maxradarrange" then v = (o.class == "satellite") and 30000 or 40000 end
         if p == "isdocked" or p == "isdocking" then v = false end
         if p == "destination" and o.destination then v = ConvertStringToLuaID(tostring(o.destination)) end
         out[i] = v
@@ -297,15 +311,36 @@ function GetMissionOfferDetails(id)
            ConvertStringToLuaID(tostring(W.playerships[3]))
 end
 function GetWareData(w, p) return "Ware " .. w end
+MOCK.bb = {}
+function GetNPCBlackboard(id, var) return (MOCK.bb[idof(id)] or {})[var] end
+function SetNPCBlackboard(id, var, val) MOCK.bb[idof(id)] = MOCK.bb[idof(id)] or {}; MOCK.bb[idof(id)][var] = val end
 function AddUITriggeredEvent(screen, control)
     MOCK.raise[#MOCK.raise + 1] = screen .. "/" .. control
     if screen == "x4companion" and control == "gates" and MOCK.md_gates ~= false then
-        -- what md\x4_companion_gates.xml does
-        MOCK.events["x4companion.gatesBegin"]("x4companion.gatesBegin", #W.gates)
-        for _, g in ipairs(W.gates) do MOCK.events["x4companion.gate"]("x4companion.gate", ConvertStringToLuaID(tostring(g))) end
-        MOCK.events["x4companion.hwgate"]("x4companion.hwgate", ConvertStringToLuaID(tostring(W.gates[3])))
-        MOCK.events["x4companion.gatesEnd"]("x4companion.gatesEnd", #W.gates)
+        -- what md\x4_companion_gates.xml does: both lists on player.entity's blackboard, ONE event
+        local gl = {}
+        for _, g in ipairs(W.gates) do gl[#gl + 1] = ConvertStringToLuaID(tostring(g)) end
+        SetNPCBlackboard(W.player, "$x4companion_gates", gl)
+        SetNPCBlackboard(W.player, "$x4companion_hwgates", { ConvertStringToLuaID(tostring(W.gates[3])) })
+        MOCK.events["x4companion.gates"]("x4companion.gates", #W.gates)
+        -- a duplicate delivery in the same frame must not wipe the list
+        MOCK.events["x4companion.gates"]("x4companion.gates", #W.gates)
     end
+end
+-- the game map's colours (helper.lua:13070 order); mock values only
+function GetHoloMapColors()
+    local out = {}
+    for i = 1, 22 do out[i] = { r = i * 10, g = 200 - i, b = 100 + i, a = 100 } end
+    return unpack(out)
+end
+Color = { text_normal = { r = 255, g = 255, b = 255, a = 100 }, text_inactive = { r = 128, g = 128, b = 128, a = 100 } }
+MOCK.guidancetarget = nil
+function GetActiveGuidanceMissionComponent() return MOCK.guidancetarget and ConvertStringToLuaID(tostring(MOCK.guidancetarget)) or nil end
+function GetAutoPilotTarget() return nil end
+function GetOrderParams(ship, idx)
+    if idx == 1 then return { { name = "destination", type = "position", value = { ConvertStringToLuaID(tostring(W.sector)), { 1000, 0, 2000 } } } } end
+    if idx == 2 then return { { name = "target", type = "object", value = ConvertStringToLuaID(tostring(MOCK.secretship)) } } end
+    return {}
 end
 function CreateOrder(ship, def, params, ...) MOCK.orders[#MOCK.orders + 1] = "lua:" .. def .. ":" .. tostring(idof(params.destination[1])) end
 MOCK.mapmenu = { name = "MapMenu", shown = false, holomap = 0 }

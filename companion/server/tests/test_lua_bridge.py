@@ -45,7 +45,7 @@ def main() -> int:
     check(T is not None, f"bridge Lua loads and initialises under LuaJIT 2.1 ({load_ms:.1f} ms)")
     check(M.onupdate is not None and M.snframe is not None, "both frame tick sources registered (SetScript onUpdate + SN Time)")
     ev = M.events
-    for name in ("x4companion.mdTick", "x4companion.gate", "HotkeyApi.Register_Request"):
+    for name in ("x4companion.mdTick", "x4companion.gates", "HotkeyApi.Register_Request"):
         check(ev[name] is not None, f"RegisterEvent {name}")
     check(len(list(M.debug.values())) == 0, f"no DebugError lines at start with Lua Log API present ({list(M.debug.values())})")
     check(any("loaded" in s for s in M.info.values()), "start line written through UIInfo")
@@ -53,7 +53,7 @@ def main() -> int:
     # hotkeys: the API raises Register_Request after a load
     ev["HotkeyApi.Register_Request"]("HotkeyApi.Register_Request", None)
     regs = list(rt.globals().HotkeyApi.registered.values())
-    check(len(regs) == 11 and all(r.area == "map;pilot;fps" and r.actionLua is not None for r in regs),
+    check(len(regs) == 17 and all(r.area == "map;pilot;fps" and r.actionLua is not None for r in regs),
           f"{len(regs)} hotkeys registered with the Native Hotkey API (area map;pilot;fps)")
 
     # run 60 s of frames at 60 fps
@@ -98,6 +98,16 @@ def main() -> int:
     ug = [g for g in gates if g["id"] == str(int(M.W.unknowngate))]
     check(ug and ug[0].get("du") and "ds" not in ug[0], "gate into an undiscovered sector: destination sent only as '?' (du), no id")
     check(any(g.get("hw") for g in gates), "superhighway entry gates from MD are sent with hw flag")
+    bb = M.bb[M.W.player]
+    check(bb is not None and bb["$x4companion_gates"] is None and bb["$x4companion_hwgates"] is None,
+          "gate lists read from the player's blackboard and cleared (SetNPCBlackboard nil); a duplicate event kept the list")
+    st0 = [m for m in msgs if m["type"] == "stats"][-1]
+    check(st0.get("gates_md") == 14 and st0.get("gates_rx") == 14 and st0.get("gates_hw") == 1,
+          f"stats: MD gate count vs received ({st0.get('gates_md')}/{st0.get('gates_rx')}, hw {st0.get('gates_hw')})")
+    th = [m for m in msgs if m["type"] == "theme"]
+    check(th and th[-1]["holo"].get("playercolor") == {"r": 80, "g": 192, "b": 108, "a": 100} and th[-1]["holo"].get("hostilecolor")
+          and th[-1]["ui"].get("text_normal"), f"theme: 22 holomap colours by name (GetHoloMapColors order) + UI colours ({len(th)} msgs)")
+    check(len(th) == 1, "theme sent once (only on change / resync)")
     sec = [m for m in msgs if m["type"] == "sector"]
     objs = [o for m in sec if m["last"] or True for o in m["items"]]
     check(sec and any(m["last"] for m in sec), f"sector scans complete ({sum(1 for m in sec if m['last'])} full scans)")
@@ -108,6 +118,20 @@ def main() -> int:
             break
     hostile = [o for o in lastscan if o.get("h")]
     check(len(lastscan) > 50 and hostile, f"sector view: {len(lastscan)} visible objects in the last scan, {len(hostile)} hostile")
+    ships_ic = [o for o in lastscan if o["c"].startswith("ship")]
+    check(ships_ic and all(o.get("ic") == o["c"] + "_trade_01" for o in ships_ic)
+          and all(o.get("ic") == "mapob_tradestation" for o in lastscan if o["c"] == "station"),
+          "game icon id 'ic' on every ship and station (GetComponentData 'icon')")
+    sats = [o for o in lastscan if o["c"] == "satellite"]
+    beacons = [o for o in lastscan if o["c"] == "navbeacon"]
+    check(len(sats) == 3 and all(o.get("ic") == "mapob_satellite_01" and o.get("rr") == 30000 and o.get("pl") for o in sats),
+          "own satellites: icon + radar range (maxradarrange) sent")
+    check(beacons and all("ic" not in o for o in beacons),
+          f"a class whose 'icon' query fails is left without icon (browser fallback), beacons still listed ({len(beacons)})")
+    check(all("rr" not in o for o in lastscan if not o.get("pl")), "radar range only for own objects")
+    check(any(o.get("mt") for o in lastscan), "mission-target flag 'mt' sent")
+    srcerr = [m for m in msgs if m["type"] == "stats"][-1]["srcerr"]
+    check("s.ship" not in srcerr and "s.code" not in srcerr, f"icon folded into the class calls without errors ({srcerr})")
     prop = {e["id"]: e for m in msgs if m["type"] == "property" for e in m["items"]}
     pend = [m for m in msgs if m["type"] == "property_end"]
     check(len(prop) == 342 and pend and len(pend[-1]["ids"]) == 342, f"property: {len(prop)} entries, property_end lists {len(pend[-1]['ids']) if pend else 0}")
@@ -192,6 +216,49 @@ def main() -> int:
     check(acks.get(13, {}).get("ok") and f"focus:{S2}" in list(M.opened.values()), "openmap with the map open -> SetFocusMapComponent")
     check(acks.get(14) and not acks[14]["ok"], "flyto to a non-sector refused")
 
+    # details (info panel): own ship with cargo; object outside radar refused, nothing sent about it
+    n4 = len(M.out)
+    M.readcb(f"cmd 40 details {S1}\ncmd 41 details {int(M.W.secretship)}")
+    M.frame(1 / 60)
+    new = [json.loads(s) for s in list(M.out.values())[n4:]]
+    det = [m for m in new if m["type"] == "details"]
+    a41 = [m for m in new if m["type"] == "ack" and m["seq"] == 41]
+    check(det and det[0]["id"] == S1 and det[0].get("cargo") and det[0]["cargo"][0].get("a") and det[0].get("oname"),
+          f"details: own ship with cargo amounts and order ({det[0].get('cargo') if det else None})")
+    check(len(det) == 1 and a41 and not a41[0]["ok"] and "SECRET" not in json.dumps(new), "details of an object outside radar refused, nothing leaked")
+
+    # details: order queue points (order lines) - a position in a known sector is sent, an object
+    # target outside radar is not
+    S3 = next(str(int(s)) for s in M.W.playerships.values() if int(s) % 3 == 2)
+    n5 = len(M.out)
+    M.readcb(f"cmd 42 details {S3}")
+    M.frame(1 / 60)
+    det3 = [json.loads(s) for s in list(M.out.values())[n5:] if '"details"' in s]
+    od = det3[0].get("orders") if det3 else None
+    check(od and len(od) == 2 and od[0].get("pt") == {"s": "501", "x": 1000, "z": 2000} and "pt" not in od[1]
+          and det3[0].get("rr") == 40000 and det3[0].get("ic"),
+          f"details: order queue with map points, hidden target point withheld ({od})")
+
+    # plotted course: visible target -> position; hidden ship -> no position/name; unknown sector -> no id
+    vis_station = next(int(k) for k, o in M.W.objs.items() if o["class"] == "station" and o["sector"] == 501 and o["owner"] == "argon" and o["isknown"] is not False)
+    secret2 = int(M.secret2)
+    def guidance_for(target):
+        M.guidancetarget = target
+        n = len(M.out)
+        for _ in range(30):
+            M.frame(1 / 60)
+        pls = [json.loads(s) for s in list(M.out.values())[n:] if '"type":"player"' in s]
+        return pls[-1].get("guidance") if pls else None
+    g1 = guidance_for(vis_station)
+    check(g1 and g1.get("id") == str(vis_station) and g1.get("x") is not None and g1.get("s") == "501", f"guidance to a visible station: {g1}")
+    g2 = guidance_for(int(M.W.secretship))
+    check(g2 and "x" not in g2 and "n" not in g2, f"guidance to a ship outside radar: no position/name ({g2})")
+    g3 = guidance_for(secret2)
+    check(g3 == {"unknown": True}, f"guidance into an undiscovered sector: only 'unknown' ({g3})")
+    M.guidancetarget = None
+    plo = [json.loads(s) for s in M.out.values() if '"type":"player"' in s][-1]["object"]
+    check(plo.get("ic") == "ship_m_trade_01" and plo.get("rr") == 40000, f"player object: icon + radar range ({plo.get('ic')}, {plo.get('rr')})")
+
     # watched sector is scanned
     for _ in range(240):
         M.frame(1 / 60)
@@ -200,7 +267,7 @@ def main() -> int:
 
     # hotkey press -> message for the browser
     n1 = len(M.out)
-    regs[4].actionLua(rt.table_from({"id": "x4companion_ship_next", "object": rt.eval(f"ConvertStringToLuaID('{S1}')")}))
+    next(r for r in regs if r.id == "x4companion_ship_next").actionLua(rt.table_from({"id": "x4companion_ship_next", "object": rt.eval(f"ConvertStringToLuaID('{S1}')")}))
     hk = [json.loads(s) for s in list(M.out.values())[n1:] if '"hotkey"' in s]
     check(hk and hk[0]["action"] == "ship_next" and hk[0]["obj"] == S1, f"hotkey press sent to the server: {hk[:1]}")
 
@@ -232,6 +299,27 @@ def main() -> int:
     st = json.loads([s for s in M.out.values() if '"type":"stats"' in s][-1])
     check(st["ch"]["missions"]["err"] == 0 and "mi.num" in st["srcoff"], "a failing Lua global is contained at source level (mi.num off)")
     check(st["ch"]["player"]["runs"] > 0 and not st["ch"]["player"].get("off"), "other channels keep running")
+
+    alltext = "\n".join(s for s in M.out.values())
+    check("SECRET" not in alltext, f"no undiscovered/hidden name leaked over the whole run ({alltext.count('SECRET')})")
+
+    # without any high-resolution clock (the real game in v1.0): cost counted in engine calls,
+    # frame budget and throttle still work
+    rt2 = lupa.LuaRuntime(unpack_returned_tuples=True)
+    rt2.execute((ROOT / "mock_game.lua").read_text(encoding="utf-8"))
+    rt2.execute("__X4COMPANION_TEST_NOQPC = true")
+    rt2.execute(src)
+    M2 = rt2.globals().MOCK
+    for _ in range(60 * 20):
+        M2.frame(1 / 60)
+    sts2 = [json.loads(s) for s in M2.out.values() if '"type":"stats"' in s]
+    st2 = max(sts2[-5:], key=lambda m: m["ch"]["sector"]["ops"])
+    hello2 = [json.loads(s) for s in M2.out.values() if '"type":"hello"' in s][-1]
+    check(st2["timer"] == "frame" and hello2["timer"] == "frame" and st2["hires"] is False,
+          f"no QPC/os.clock: timer reported as 'frame' (hello + stats)")
+    check(st2["ch"]["sector"]["ops"] > 0 and st2["ch"]["sector"]["pops"] > 0 and st2["frame"]["ops"] > 0,
+          f"cost measured in engine calls instead: sector {st2['ch']['sector']['ops']} ops/frame, pass {st2['ch']['sector']['pops']} ops")
+    check(st2["frame"]["ops"] < 400, f"ops frame budget keeps the bridge time-sliced ({st2['frame']['ops']} avg ops/frame)")
 
     failed = [w for ok, w in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
