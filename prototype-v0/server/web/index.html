@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X4 WebMap</title>
+<style>
+  :root {
+    --bg: #070b12; --panel: rgba(14, 22, 34, 0.88); --line: #1f2d40; --text: #d6e2f0;
+    --muted: #7d8fa6; --ok: #3ccf7a; --warn: #e7b43c; --bad: #e5534b; --accent: #4fb3ff;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.35 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  #map { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #map.dragging { cursor: grabbing; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 8px;
+    align-items: center; padding: 8px 12px; background: var(--panel);
+    border-bottom: 1px solid var(--line); user-select: none; }
+  #sector { font-size: 18px; font-weight: 600; margin-right: 12px; }
+  .pill { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted);
+    white-space: nowrap; }
+  .pill.ok { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .spacer { flex: 1; }
+  button { background: #142032; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 3px 10px; font: inherit; cursor: pointer; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  #help { position: fixed; bottom: 8px; right: 12px; color: var(--muted); font-size: 12px;
+    background: var(--panel); padding: 4px 8px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="bar">
+  <span id="sector">—</span>
+  <span id="ws" class="pill bad">böngésző ↔ szerver: nincs</span>
+  <span id="game" class="pill bad">játék: nincs kapcsolat</span>
+  <span id="age" class="pill">utolsó frissítés: –</span>
+  <span id="info" class="pill">–</span>
+  <span class="spacer"></span>
+  <button id="btnFollow" class="on" title="P">Követés</button>
+  <button id="btnLabels" class="on" title="L">Nevek</button>
+  <button id="btnFit" title="F / dupla katt">Mindet mutat</button>
+</div>
+<div id="help">húzás: mozgatás · görgő: nagyítás · F: mindet · P: követés · L: nevek</div>
+<script src="map.js"></script>
+</body>
+</html>

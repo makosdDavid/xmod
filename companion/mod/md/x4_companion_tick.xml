@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OPTIONAL second tick source for x4_companion (delete this file to disable it).
+     If the UI onUpdate loop stalls while X4 is not the focused window, this cue still fires on
+     game time (every 250 ms, not while paused) and pokes the Lua side, which then runs one
+     scheduler step only if no frame-driven step ran for ~0.5 s.
+     Pattern: SirNukes sn_mod_support_apis md\time_api.xml cue "MD_New_Frame" (instantiated, no
+     conditions, checkinterval, raise_lua_event); raise_lua_event: vanilla md\cover.xml:397.
+     No variables, no save impact. -->
+<mdscript name="X4Companion_Tick" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="Tick" instantiate="true" checkinterval="250ms">
+      <actions>
+        <raise_lua_event name="'x4companion.mdTick'" />
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

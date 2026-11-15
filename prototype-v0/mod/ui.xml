@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Same loading mechanism as the installed mycu_map_hotkeys\ui.xml (9.0-era mod that uses the
+     SN globals): a menus-environment addon with a dependency on the SN addon name
+     ("sn_mod_support_apis", from sn_mod_support_apis\ui.xml), so the SN Lua (which installs
+     the patched require() and Register_OnLoad_Init) is loaded before ours. -->
+<addon name="x4_webmap" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../ui/core/addon.xsd">
+  <environment type="menus">
+    <file name="ui/x4_webmap.lua" />
+    <dependency name="sn_mod_support_apis" />
+  </environment>
+</addon>

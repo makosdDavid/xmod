@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+logs/
+state/
+# exported from the game's own map files - regenerate locally with export_static.py, never commit game data
+static_map.json
+*.pyc

@@ -1,0 +1,811 @@
+"""Game simulator for X4 Companion: speaks the exact v2 protocol of dev\\x4_companion\\ui\\x4_companion.lua
+over the same named pipe, the way the SN winpipe client does (CreateFile, message read mode +
+PIPE_NOWAIT, one WriteFile per message, non-blocking reads of commands, reopen after a failure).
+
+The world is built from data\\static_map.json (the real 9.00 galaxy incl. DLC and installed map
+mods): every known sector, gates from the real gate links, superhighway entry gates, NPC stations
+and traffic per sector, a few hundred player ships with fleets and orders, logbook/ticker/inbox
+traffic with alerts, missions, offers, factions with licences, account history and bridge stats.
+The player flies from gate to gate and jumps sectors, so auto-follow and sector changes happen.
+
+  uv run python sim.py                          # forever, default pipe x4companion
+  uv run python sim.py --ships 400 --seconds 30 --hotkeys
+  uv run python sim.py --pause-at 10 --pause-for 8     # paused:true, then silence (focus lost)
+  uv run python sim.py --bad-bytes --junk               # invalid UTF-8, raw ESC, quotes, junk lines
+  uv run python sim.py --mode byte --gc-on-exit
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import random
+import sys
+import time
+from pathlib import Path
+
+import pywintypes
+import win32file
+import win32pipe
+import winerror
+
+ROOT = Path(__file__).resolve().parent
+MAX_MSG = 48000
+
+FACTIONS = [
+    ("argon", "Argon Federation", "ARG", (0, 120, 255), 10), ("antigone", "Antigone Republic", "ANT", (80, 160, 255), 12),
+    ("hatikvah", "Hatikvah Free League", "HAT", (0, 200, 180), 5), ("paranid", "Godrealm of the Paranid", "PAR", (160, 60, 220), 2),
+    ("holyorder", "Holy Order of the Pontifex", "HOP", (200, 40, 160), -12), ("alliance", "Alliance of the Word", "ALI", (220, 200, 60), 3),
+    ("teladi", "Teladi Company", "TEL", (60, 200, 60), 8), ("ministry", "Ministry of Finance", "MIN", (40, 160, 40), 6),
+    ("split", "Zyarth Patriarchy", "ZYA", (230, 120, 40), -3), ("freesplit", "Free Families", "FRF", (240, 160, 60), 4),
+    ("scaleplate", "Scale Plate Pact", "SCA", (150, 140, 60), -15), ("terran", "Terran Protectorate", "TER", (220, 220, 220), 1),
+    ("pioneers", "Segaris Pioneers", "PIO", (120, 200, 255), 7), ("boron", "Queendom of Boron", "BOR", (60, 180, 255), 9),
+    ("buccaneers", "Duke's Buccaneers", "BUC", (180, 80, 80), -18), ("loanshark", "Riptide Rakers", "LOA", (200, 100, 60), -4),
+    ("xenon", "Xenon", "XEN", (230, 30, 30), -30), ("khaak", "Kha'ak", "KHK", (200, 60, 200), -30),
+    ("trinity", "Trinity Sanctum", "TRI", (100, 220, 160), 0),
+]
+FACTION_IDS = [f[0] for f in FACTIONS]
+SHIP_CLASSES = [("ship_s", 0.30), ("ship_m", 0.35), ("ship_l", 0.22), ("ship_xl", 0.08), ("ship_xs", 0.05)]
+PURPOSES = ["trade", "mine", "fight", "build", "auxiliary"]
+ORDERS = [("TradeRoutine", "Automatikus kereskedés", "Kereskedés"), ("MiningRoutine", "Automatikus bányászat", "Bányászat"),
+          ("Patrol", "Járőrözés", "Járőr"), ("Wait", "Várakozás", "Vár"), ("MoveWait", "Repülés és várakozás", "Úton"),
+          ("Escort", "Kíséret", "Kísér"), ("DockAndWait", "Dokkolás és várakozás", "Dokkol"),
+          ("ProtectStation", "Állomás védelme", "Véd")]
+NAMES = ["Hermes", "Nodan", "Minotaur", "Elite", "Mercury", "Courier", "Magnetar", "Sunder", "Behemoth", "Odysseus",
+         "Colossus", "Raptor", "Shih", "Kalis", "Heron", "Crane", "Plutus", "Okinawa", "Rattlesnake", "Asgard"]
+LOG_TEMPLATES = {
+    "general": ["{ship} dokkolt: {station}", "Új hajó leszállítva: {ship}", "Javítás kész: {ship}"],
+    "missions": ["Küldetés teljesítve: {mission}", "Küldetés frissítve: {mission}"],
+    "news": ["{fac} és {fac2} kapcsolata romlik", "Xenon támadás {sector} közelében"],
+    "diplomacy": ["Diplomáciai esemény: {fac} kereskedelmi megállapodás"],
+    "alerts": ["{ship} támadás alatt ({sector})", "{ship} megsemmisült ({sector})", "{station} támadás alatt"],
+    "upkeep": ["{station}: kevés a pénz a kereskedelemhez", "{ship}: nincs pilóta"],
+    "tips": ["Tipp: a térképen jobb gombbal adhatsz parancsot."],
+}
+
+
+class SnLikeClient:
+    def __init__(self, name: str, mode: str):
+        self.path = "\\\\.\\pipe\\" + name
+        self.mode = mode
+        self.h = None
+        self.ok_writes = 0
+        self.failed = 0
+        self.reads = 0
+
+    def _open(self) -> None:
+        h = win32file.CreateFile(self.path, win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                                 0, None, win32file.OPEN_EXISTING, 0, None)
+        if self.mode == "message":
+            win32pipe.SetNamedPipeHandleState(h, win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_NOWAIT, None, None)
+        else:
+            win32pipe.SetNamedPipeHandleState(h, win32pipe.PIPE_NOWAIT, None, None)
+        self.h = h
+        print(f"[sim] connected to {self.path} ({self.mode} mode)", flush=True)
+
+    def write(self, data: bytes) -> bool:
+        try:
+            if self.h is None:
+                self._open()
+            _, n = win32file.WriteFile(self.h, data)
+            if n != len(data):
+                raise pywintypes.error(0, "WriteFile", f"short write {n}/{len(data)}")
+            self.ok_writes += 1
+            return True
+        except pywintypes.error as e:
+            if self.h is not None or self.failed == 0:
+                print(f"[sim] pipe unavailable ({e.winerror}: {e.strerror}); retrying", flush=True)
+            self.failed += 1
+            self.close()
+            return False
+
+    def read_all(self) -> list[str]:
+        out = []
+        if self.h is None:
+            return out
+        while True:
+            try:
+                hr, data = win32file.ReadFile(self.h, 65536)
+            except pywintypes.error as e:
+                if e.winerror in (winerror.ERROR_NO_DATA,):
+                    return out
+                self.close()
+                return out
+            self.reads += 1
+            out.extend(l for l in bytes(data).decode("utf-8", "replace").splitlines() if l.strip())
+
+    def close(self) -> None:
+        if self.h is not None:
+            try:
+                win32file.CloseHandle(self.h)
+            except pywintypes.error:
+                pass
+            self.h = None
+
+
+def jd(o) -> str:
+    return json.dumps(o, separators=(",", ":"), ensure_ascii=False)
+
+
+class World:
+    def __init__(self, nships: int, seed: int, bad_bytes: bool):
+        self.r = random.Random(seed)
+        self.bad = bad_bytes
+        self.t0 = time.time()
+        self.gametime = 123456.0
+        static = json.loads((ROOT / "data" / "static_map.json").read_text(encoding="utf-8"))
+        r = self.r
+        self.next_id = 30000
+        self.clusters = []
+        self.sectors: dict[str, dict] = {}
+        self.by_macro: dict[str, str] = {}
+        for c in static["clusters"]:
+            cid = self.nid()
+            ce = {"id": cid, "name": c["name"], "macro": c["macro"], "x": c["x"], "z": c["z"], "sectors": []}
+            for s in c["sectors"]:
+                sid = self.nid()
+                owner = s.get("owner") or r.choice(FACTION_IDS[:16] + ["xenon", "khaak", "ownerless"])
+                se = {"id": sid, "name": s["name"], "macro": s["macro"], "x": s["x"], "z": s["z"],
+                      "owner": None if owner == "ownerless" else owner, "cluster": cid,
+                      "gx": c["x"] + s["x"], "gz": c["z"] + s["z"]}
+                if r.random() < 0.6:
+                    se["res"] = [{"w": w, "c": r.randint(10, 100), "m": 100} for w in r.sample(["ore", "silicon", "ice", "hydrogen", "helium", "methane", "nividium", "rawscrap"], r.randint(1, 4))]
+                ce["sectors"].append(se)
+                self.sectors[sid] = se
+                self.by_macro[s["macro"]] = sid
+            self.clusters.append(ce)
+        # the player's discoveries: BFS over gate links from the start, ~60 % of the galaxy;
+        # everything else is undiscovered and must never reach the browser (names carry "SECRET")
+        adj: dict[str, set] = {sid: set() for sid in self.sectors}
+        for a, b in static["gates"]:
+            sa, sb = self.by_macro.get(a), self.by_macro.get(b)
+            if sa and sb:
+                adj[sa].add(sb); adj[sb].add(sa)
+        start = max(adj, key=lambda k: len(adj[k]))
+        self.known = {start}
+        frontier = [start]
+        target = int(len(self.sectors) * 0.6)
+        while frontier and len(self.known) < target:
+            nxt = []
+            for f in frontier:
+                for n in sorted(adj[f]):
+                    if n not in self.known and len(self.known) < target:
+                        self.known.add(n); nxt.append(n)
+            frontier = nxt
+        for sid, se in self.sectors.items():
+            if sid not in self.known:
+                se["name"] = "SECRET " + se["name"]
+        # gates and highway entry gates as objects in their sectors
+        self.gates = []
+        self.objects: dict[str, dict[str, dict]] = {sid: {} for sid in self.sectors}
+        for kind, links in (("gate", static["gates"]), ("highwayentrygate", static["highways"])):
+            for a, b in links:
+                sa, sb = self.by_macro.get(a), self.by_macro.get(b)
+                if not sa or not sb:
+                    continue
+                ga = self._gate_obj(sa, sb, kind)
+                gb = self._gate_obj(sb, sa, kind)
+                ga["d"], gb["d"] = gb["id"], ga["id"]
+                self.gates += [ga, gb]
+        # NPC stations + player stations
+        self.stations = {}
+        for sid, s in self.sectors.items():
+            for _ in range(r.randint(1, 8) if s["owner"] else r.randint(0, 2)):
+                owner = s["owner"] or r.choice(["xenon", "buccaneers", "loanshark"])
+                o = self._obj(sid, "station", owner, self._name("st"), r.uniform(-150000, 150000), r.uniform(-150000, 150000))
+                o["code"] = self._code()
+                if sid not in self.known or r.random() < 0.2:
+                    o["unknown"] = True
+                    o["n"] = "SECRET station " + o["n"]
+        sids = sorted(self.known)
+        self.home = r.sample(sids, 6)
+        for i in range(max(3, nships // 16)):
+            sid = r.choice(self.home if r.random() < 0.7 else sids)
+            o = self._obj(sid, "station", "player", f"Saját állomás {i + 1} {self._quoted()}", r.uniform(-120000, 120000), r.uniform(-120000, 120000))
+            o.update(code=self._code(), money=r.randint(100000, 50000000), mods=r.randint(4, 60),
+                     wf=r.randint(0, 900), wfc=r.choice([0, 500, 1000]))
+            self.stations[o["id"]] = o
+        # player ships
+        self.ships = {}
+        commanders = []
+        for i in range(nships):
+            sid = r.choice(self.home if r.random() < 0.6 else sids)
+            cls = self._wchoice(SHIP_CLASSES)
+            name = f"{r.choice(NAMES)} {i + 1}"
+            if self.bad and i % 23 == 0:
+                name = f'"{name}" ékezet @@BAD{i % 3}@@'
+            o = self._obj(sid, cls, "player", name, r.uniform(-120000, 120000), r.uniform(-120000, 120000))
+            od = r.choice(ORDERS)
+            o.update(code=self._code(), p=r.choice(PURPOSES), hull=r.randint(40, 100), shield=r.randint(0, 100),
+                     od=od[0], on=od[1], os=od[2], oq=r.randint(0, 4), mc=f"ship_gen_{cls[5:]}_{r.choice(['trans', 'miner', 'fighter'])}_01_a_macro",
+                     vx=r.uniform(-150, 150), vz=r.uniform(-150, 150))
+            if cls in ("ship_l", "ship_xl") and r.random() < 0.5:
+                commanders.append(o)
+                o["fl"] = f"{r.choice(['Alpha', 'Bravo', 'Delta', 'Omega'])} flotta {len(commanders)}"
+            elif commanders and r.random() < 0.35:
+                o["cmd"] = r.choice(commanders)["id"]
+            self.ships[o["id"]] = o
+        # NPC traffic is generated per sector when first scanned
+        self.npc_done = set()
+        # player
+        start = self.home[0]
+        self.player_ship = self._obj(start, "ship_m", "player", "Játékos hajója", 0.0, 0.0)
+        self.player_ship.update(code="PLY-001", hull=93.0, shield=100.0)
+        self.player_sector = start
+        self.player_target_gate = None
+        self.target = None
+        self.money = 41_234_567
+        self.missions = self._missions()
+        self.offers = self._offers()
+        self.factions = self._factions()
+        self.logbook: list[dict] = []
+        self.ticker: list[dict] = []
+        self.inbox: list[dict] = []
+        for _ in range(60):
+            self._new_log(initial=True)
+        for _ in range(12):
+            self._new_ticker()
+        for _ in range(8):
+            self._new_message()
+
+    # ---------------------------------------------------------------- builders
+    def nid(self) -> str:
+        self.next_id += self.r.randint(1, 9)
+        return str(self.next_id)
+
+    def _code(self) -> str:
+        r = self.r
+        return "".join(r.choice("ABCDEFGHJKLMNPRSTUVWXYZ") for _ in range(3)) + "-" + str(r.randint(100, 999))
+
+    def _name(self, kind: str) -> str:
+        r = self.r
+        return r.choice(["Fénylő", "Kristály", "Kelet", "Nyugat", "Ős", "Új"]) + " " + r.choice(["Kereskedőállomás", "Hajógyár", "Védelmi Állomás", "Energiacellák", "Finomító", "Raktár"])
+
+    def _quoted(self) -> str:
+        return '"Aurora"' if self.r.random() < 0.3 else ""
+
+    def _wchoice(self, items):
+        x = self.r.random()
+        acc = 0.0
+        for v, w in items:
+            acc += w
+            if x <= acc:
+                return v
+        return items[-1][0]
+
+    def _obj(self, sid: str, cls: str, owner: str, name: str, x: float, z: float) -> dict:
+        o = {"id": self.nid(), "c": cls, "n": name, "o": owner, "s": sid, "x": x, "y": 0.0, "z": z, "yaw": 0.0}
+        self.objects[sid][o["id"]] = o
+        return o
+
+    def _gate_obj(self, sid: str, other: str, kind: str) -> dict:
+        s, o = self.sectors[sid], self.sectors[other]
+        ang = math.atan2(o["gx"] - s["gx"], o["gz"] - s["gz"])
+        dist = 180000 if kind == "gate" else 90000
+        g = self._obj(sid, kind, "ownerless", "Ugrókapu" if kind == "gate" else "Szupersztráda", dist * math.sin(ang), dist * math.cos(ang))
+        g["ds"] = other
+        return g
+
+    def _npc(self, sid: str) -> None:
+        if sid in self.npc_done:
+            return
+        self.npc_done.add(sid)
+        r = self.r
+        s = self.sectors[sid]
+        for _ in range(r.randint(60, 260)):
+            owner = s["owner"] if (s["owner"] and r.random() < 0.6) else r.choice(FACTION_IDS)
+            cls = self._wchoice(SHIP_CLASSES)
+            o = self._obj(sid, cls, owner, f"{r.choice(NAMES)} ({owner})", r.uniform(-200000, 200000), r.uniform(-200000, 200000))
+            o.update(code=self._code(), p=r.choice(PURPOSES), hull=r.randint(30, 100), vx=r.uniform(-300, 300), vz=r.uniform(-300, 300))
+        for _ in range(r.randint(0, 6)):
+            self._obj(sid, r.choice(["satellite", "navbeacon", "resourceprobe", "lockbox", "collectablewares"]),
+                      r.choice(["player", "ownerless"]), "Objektum", r.uniform(-150000, 150000), r.uniform(-150000, 150000))
+
+    def _missions(self) -> list[dict]:
+        r = self.r
+        out = []
+        for i in range(9):
+            sid = r.choice(sorted(self.sectors))
+            out.append({"id": self.nid(), "n": r.choice(["Hajó építése", "Áru szállítása", "Járőrözés", "Xenon elleni harc", "Állomás védelme", "Keresés és mentés"]) + f" #{i + 1}",
+                        "d": "Részletes küldetésleírás. Szállíts 120 egység Energiacellát a megadott állomásra.",
+                        "diff": r.randint(0, 5), "mt": r.choice(["plot", "guild", "fight", "build", "upkeep", "guidance"]),
+                        "st": r.choice(["Szállítás", "Harc", "Építés", "Felderítés"]), "fa": r.choice(FACTION_IDS[:10]),
+                        "rw": r.randint(50000, 3000000), "rt": "", "dur": r.choice([-1, r.randint(300, 7200)]),
+                        "act": True if i == 0 else None, "ab": True,
+                        "ob": f"Repülj ide: {self.sectors[sid]['name']}" if sid in self.known else "Repülj egy ismeretlen szektorba",
+                        "pn": "Szállított", "pc": r.randint(0, 50), "pm": 120, "acs": sid if sid in self.known else None})
+        return out
+
+    def _offers(self) -> list[dict]:
+        r = self.r
+        return [{"id": self.nid(), "n": r.choice(["Hajószállítás", "Áruszállítás", "Bérgyilkosság", "Javítás", "Felderítés"]) + f" ({i + 1})",
+                 "d": "Ajánlat leírása.", "diff": r.randint(0, 5), "mt": r.choice(["fight", "trade", "build"]),
+                 "st": "Ajánlat", "fa": r.choice(FACTION_IDS[:12]), "rw": r.randint(20000, 900000), "rt": "",
+                 "dur": r.randint(600, 3600), "s": r.choice(sorted(self.known))} for i in range(24)]
+
+    def _factions(self) -> list[dict]:
+        out = []
+        for fid, name, short, col, rel in FACTIONS:
+            rn = "Szövetséges" if rel >= 20 else "Baráti" if rel >= 10 else "Semleges" if rel > -10 else "Ellenséges" if rel > -20 else "Elkeseredett ellenség"
+            lic = [{"t": t, "n": n, "has": rel >= mr, "pr": pr, "mr": mr} for t, n, pr, mr in
+                   (("generaluseequipment", "Általános felszerelés", 0, 0), ("militaryship", "Katonai hajó", 0, 10),
+                    ("capitalship", "Nagyhajó", 2000000, 20), ("police", "Rendőrségi", 0, 20), ("station_gen_basic", "Alap állomás", 0, -5))]
+            out.append({"id": fid, "n": name, "sn": short, "rel": rel, "rn": rn, "e": rel <= -10 or None, "h": rel <= -25 or None,
+                        "lk": fid in ("xenon", "khaak") or None, "col": {"r": col[0], "g": col[1], "b": col[2]}, "lic": lic})
+        return out
+
+    def _fill(self, tpl: str) -> str:
+        r = self.r
+        ship = r.choice(list(self.ships.values()))["n"] if self.ships else "Hajó"
+        st = r.choice(list(self.stations.values()))["n"] if self.stations else "Állomás"
+        return tpl.format(ship=ship, station=st, mission=r.choice(self.missions)["n"], fac=r.choice(FACTIONS)[1],
+                          fac2=r.choice(FACTIONS)[1], sector=self.sectors[r.choice(sorted(self.known))]["name"])
+
+    def _new_log(self, initial: bool = False, cat: str | None = None) -> dict:
+        r = self.r
+        cat = cat or r.choice(["general", "general", "missions", "news", "alerts", "upkeep", "tips", "diplomacy"])
+        self.gametime += r.uniform(1, 30) if initial else 0
+        e = {"cat": cat, "t": round(self.gametime, 2), "ti": self._fill(r.choice(LOG_TEMPLATES[cat])),
+             "tx": "Részletek: " + self._fill(r.choice(LOG_TEMPLATES["general"])) if r.random() < 0.6 else "",
+             "fa": r.choice(FACTIONS)[1] if r.random() < 0.4 else None,
+             "mo": r.choice([None, None, r.randint(-50000, 900000)])}
+        if cat == "alerts" and self.ships:
+            ship = r.choice(list(self.ships.values()))
+            e["ia"] = "showonmap"
+            e["ic"] = ship["id"]
+            e["hl"] = True
+        if not e["tx"]:
+            e.pop("tx")
+        self.logbook.append(e)
+        return e
+
+    def _new_ticker(self) -> dict:
+        r = self.r
+        e = {"id": self.nid(), "t": round(self.gametime, 2), "cat": r.choice(["trade", "alert", "general"]),
+             "ti": self._fill(r.choice(["Kereskedés kész: {ship}", "{ship} támadás alatt", "Új küldetés elérhető"])), "tx": ""}
+        self.ticker.append(e)
+        return e
+
+    def _new_message(self) -> dict:
+        r = self.r
+        e = {"id": self.nid(), "cat": r.choice(["highprio", "lowprio"]), "t": round(self.gametime, 2),
+             "ti": r.choice(["Üzenet a flottaparancsnoktól", "Ajánlat egy kereskedőtől", "Figyelmeztetés"]),
+             "tx": "Az üzenet szövege, akár több mondat is.", "so": r.choice(FACTIONS)[1], "rd": False}
+        self.inbox.append(e)
+        self.inbox = self.inbox[-40:]
+        return e
+
+    # ---------------------------------------------------------------- dynamics
+    def step(self, dt: float) -> list[dict]:
+        """Advance the world; return 'events' (new log/ticker entries) for chatty logging."""
+        r = self.r
+        self.gametime += dt
+        p = self.player_ship
+        sid = self.player_sector
+        if self.player_target_gate is None or self.player_target_gate["s"] != sid:
+            gs = [g for g in self.objects[sid].values() if g["c"] == "gate" and g["ds"] in self.known]
+            self.player_target_gate = r.choice(gs) if gs else None
+        g = self.player_target_gate
+        speed = 2500.0   # fast, so the simulation shows sector changes in a test run
+        if g:
+            dx, dz = g["x"] - p["x"], g["z"] - p["z"]
+            d = math.hypot(dx, dz)
+            if d < speed * dt * 1.5:
+                dest = self.objects.get(g["ds"], {}).get(g.get("d")) if g.get("d") else None
+                self._move_player(g["ds"], dest)
+            else:
+                p["x"] += dx / d * speed * dt
+                p["z"] += dz / d * speed * dt
+                p["yaw"] = math.atan2(dx, dz)
+                p["speed"] = speed
+        for o in self.ships.values():
+            if "vx" in o:
+                o["x"] += o["vx"] * dt
+                o["z"] += o["vz"] * dt
+        for oid in list(self.objects[self.player_sector].keys())[:400]:
+            o = self.objects[self.player_sector][oid]
+            if "vx" in o and o["o"] != "player":
+                o["x"] += o["vx"] * dt
+                o["z"] += o["vz"] * dt
+                o["yaw"] = math.atan2(o["vx"], o["vz"])
+        if r.random() < 0.02 * dt * 4:
+            s = r.choice(list(self.ships.values()))
+            s["hull"] = max(5, s["hull"] - r.randint(5, 30))
+        self.money += int(r.uniform(-2000, 9000) * dt)
+        return []
+
+    def _move_player(self, sid: str, dest_gate: dict | None) -> None:
+        p = self.player_ship
+        self.objects[self.player_sector].pop(p["id"], None)
+        self.player_sector = sid
+        p["s"] = sid
+        if dest_gate:
+            p["x"], p["z"] = dest_gate["x"] * 0.97, dest_gate["z"] * 0.97
+        else:
+            p["x"], p["z"] = 0.0, 0.0
+        self.objects[sid][p["id"]] = p
+        self.player_target_gate = None
+        self.target = None
+        print(f"[sim] player jumped to {self.sectors[sid]['name']}", flush=True)
+
+
+class Bridge:
+    """Mimics the Lua scheduler: per-channel intervals, chunking, diffs, resync, commands."""
+
+    INTERVALS = {"player": 0.25, "sector": 1.0, "property": 4.0, "logbook": 2.0, "ticker": 1.0, "messages": 5.0,
+                 "missions": 3.0, "offers": 10.0, "factions": 20.0, "economy": 30.0, "stats": 2.0, "galaxy": 60.0}
+
+    def __init__(self, world: World, cli: SnLikeClient, args):
+        self.w = world
+        self.cli = cli
+        self.a = args
+        self.session = 0
+        self.connected = False
+        self.last_hello = -1e9
+        self.due = {k: 0.0 for k in self.INTERVALS}
+        self.sent_prop: dict[str, str] = {}
+        self.sent_log = 0
+        self.sent_ticker = 0
+        self.gen = 0
+        self.watch: str | None = None
+        self.n_sector = 0
+        self.allow = {"resync", "watch", "reenable", "openmap", "select", "target", "guidance", "guidance_end"}
+        if args.allow_orders:
+            self.allow |= {"stop", "flyto"}
+        self.counts = {}
+        self.paused = False
+        self.last_hotkey = 0.0
+        self.last_junk = 0.0
+        self.hotkey_i = 0
+        self.cmds = 0
+        self.nbytes = 0
+
+    def send(self, obj: dict, raw_items: list[str] | None = None) -> bool:
+        obj["v"] = 2
+        obj["src"] = "sim"
+        if raw_items is None:
+            s = jd(obj)
+        else:
+            head = jd(obj)
+            s = head[:-1] + ',"items":[' + ",".join(raw_items) + "]}"
+        data = (s + "\n").encode("utf-8")
+        if self.a.bad_bytes:
+            data = data.replace(b"@@BAD0@@", b"\xc3\x28 invalid utf8").replace(b"@@BAD1@@", b"\xff\xfe\xfd").replace(b"@@BAD2@@", b"\xe2\x82")
+        ok = self.cli.write(data)
+        if ok:
+            self.nbytes += len(data)
+            self.counts[obj["type"]] = self.counts.get(obj["type"], 0) + 1
+        else:
+            if self.connected:
+                print("[sim] write failed -> reconnecting, full resync on next hello", flush=True)
+            self.connected = False
+        return ok
+
+    def chunks(self, mtype: str, items: list[dict], extra: dict) -> None:
+        part, buf, size = 0, [], 0
+        for it in items:
+            js = jd(it)
+            if size + len(js) > MAX_MSG - 1000 and buf:
+                self.send({"type": mtype, "part": part, "last": False, **extra}, buf)
+                part, buf, size = part + 1, [], 0
+            buf.append(js)
+            size += len(js) + 1
+        self.send({"type": mtype, "part": part, "last": True, **extra}, buf)
+
+    def resync(self) -> None:
+        for k in self.due:
+            self.due[k] = 0.0
+        self.sent_prop = {}
+        self.sent_log = max(0, len(self.w.logbook) - 40)
+        self.sent_ticker = max(0, len(self.w.ticker) - 30)
+
+    # ---------------------------------------------------------------- channels
+    def ch_player(self, now):
+        w = self.w
+        p = w.player_ship
+        sec = w.sectors[w.player_sector]
+        m = {"type": "player", "t": round(now, 3), "ingame": True, "paused": self.paused, "name": "Kovács Kapitány",
+             "faction": "Játékos", "money": w.money, "gametime": round(w.gametime, 1),
+             "sector": {"id": sec["id"], "name": sec["name"]},
+             "object": {"id": p["id"], "mode": "ship", "x": round(p["x"]), "y": 0, "z": round(p["z"]), "yaw": round(p["yaw"], 4),
+                        "name": p["n"], "class": "ship_m", "hull": p["hull"], "shield": p["shield"], "code": p["code"],
+                        "maxspeed": 520, "travelspeed": 4100, "speed": round(p.get("speed", 0), 1)},
+             "nframe": int(now * 60), "nmd": 0, "where": {"mode": "pilot", "name": p["n"]}}
+        if w.target and w.target in w.objects[w.player_sector]:
+            t = w.objects[w.player_sector][w.target]
+            m["target"] = {"id": t["id"], "name": t["n"], "class": t["c"], "hull": t.get("hull"), "owner": t["o"],
+                           "dist": round(math.hypot(t["x"] - p["x"], t["z"] - p["z"])), "x": round(t["x"]), "z": round(t["z"]),
+                           "sector": w.player_sector}
+        act = next((x for x in w.missions if x.get("act")), None)
+        if act:
+            m["mission"] = {"id": act["id"], "name": act["n"]}
+        if self.watch:
+            m["watch"] = self.watch
+        self.send(m)
+
+    def ch_galaxy(self, now):
+        self.gen += 1
+        items = []
+        known = self.w.known
+        for c in self.w.clusters:
+            secs = [{k: s.get(k) for k in ("id", "name", "macro", "owner", "x", "z", "res") if s.get(k) is not None}
+                    for s in c["sectors"] if s["id"] in known]
+            if secs:
+                items.append({"id": c["id"], "name": c["name"], "macro": c["macro"], "x": c["x"], "z": c["z"], "sectors": secs})
+        self.chunks("galaxy", items, {"gen": self.gen})
+        gates = []
+        for g in self.w.gates:
+            if g["s"] not in known:
+                continue
+            e = {"id": g["id"], "s": g["s"], "a": True, "x": round(g["x"]), "z": round(g["z"])}
+            if g["c"] == "highwayentrygate":
+                e["hw"] = True
+            if g["ds"] in known:
+                e["ds"] = g["ds"]
+            else:
+                e["du"] = True
+            gates.append(e)
+        self.chunks("gates", gates, {"n": len(gates)})
+
+    def scan_sector(self, sid: str, is_player: bool):
+        w = self.w
+        w._npc(sid)
+        objs, hidden = [], 0
+        p = w.player_ship
+        for o in list(w.objects[sid].values())[:700]:
+            # visibility like the bridge: own objects, known gates/stations; other ships only near own assets
+            vis = o["o"] == "player" or (o["c"] in ("gate", "highwayentrygate", "station") and not o.get("unknown"))
+            if o.get("unknown"):
+                hidden += 1
+                continue
+            if not vis and is_player:
+                vis = math.hypot(o["x"] - p["x"], o["z"] - p["z"]) < 60000
+            if not vis and not is_player:
+                vis = self.w.r.random() < 0.3
+            if not vis:
+                hidden += 1
+                continue
+            e = {"id": o["id"], "c": o["c"], "n": o["n"], "o": o["o"], "x": round(o["x"]), "y": 0, "z": round(o["z"])}
+            if o["o"] == "player":
+                e["pl"] = True
+            if o["o"] in ("xenon", "khaak"):
+                e["h"] = True
+            elif o["o"] in ("buccaneers", "scaleplate", "holyorder"):
+                e["e"] = True
+            if o["c"].startswith("ship"):
+                e.update(yaw=round(o.get("yaw", 0), 4), p=o.get("p"), hull=o.get("hull"), code=o.get("code"))
+            elif o["c"] in ("gate", "highwayentrygate"):
+                if o.get("ds") in w.known:
+                    e["ds"] = o.get("ds")
+                else:
+                    e["du"] = True
+            elif o["c"] == "station":
+                e["code"] = o.get("code")
+            e["r"] = next((f[4] for f in FACTIONS if f[0] == o["o"]), 0)
+            objs.append(e)
+        self.n_sector += 1
+        self.chunks("sector", objs, {"sid": sid, "gen": self.n_sector, "player": is_player, "n": len(objs) + hidden,
+                                     "hidden": hidden, "skipped": 0, "full": False})
+
+    def ch_sector(self, now):
+        self.scan_sector(self.w.player_sector, True)
+        if self.watch and self.watch != self.w.player_sector and self.watch in self.w.sectors:
+            self.scan_sector(self.watch, False)
+
+    def ch_property(self, now):
+        w = self.w
+        items, ids = [], []
+        for o in list(w.ships.values()) + list(w.stations.values()):
+            if o["c"] == "station":
+                e = {"id": o["id"], "k": "station", "n": o["n"], "code": o["code"], "c": "station", "s": o["s"],
+                     "hull": 100, "money": o["money"], "mods": o["mods"], "wf": o["wf"], "wfc": o["wfc"]}
+            else:
+                e = {"id": o["id"], "k": "ship", "n": o["n"], "code": o["code"], "c": o["c"], "p": o["p"], "s": o["s"],
+                     "hull": o["hull"], "shield": o["shield"], "fl": o.get("fl"), "mc": o["mc"], "od": o["od"],
+                     "on": o["on"], "os": o["os"], "oq": o["oq"], "cmd": o.get("cmd")}
+            e = {k: v for k, v in e.items() if v is not None}
+            js = jd(e)
+            ids.append(o["id"])
+            if self.sent_prop.get(o["id"]) != js:
+                items.append(e)
+                self.sent_prop[o["id"]] = js
+        self.gen += 1
+        if items:
+            self.chunks("property", items, {"gen": self.gen})
+        self.send({"type": "property_end", "gen": self.gen, "ids": ids, "ships": len(w.ships), "stations": len(w.stations)})
+
+    def ch_logbook(self, now):
+        w = self.w
+        if w.r.random() < 0.35:
+            w._new_log(cat="alerts" if w.r.random() < 0.3 else None)
+        new = w.logbook[self.sent_log:]
+        self.sent_log = len(w.logbook)
+        for cat in {e["cat"] for e in new}:
+            items = [{k: v for k, v in e.items() if v is not None} for e in new if e["cat"] == cat]
+            self.chunks("logbook", items, {"cat": cat, "total": len(w.logbook)})
+
+    def ch_ticker(self, now):
+        w = self.w
+        if w.r.random() < 0.3:
+            w._new_ticker()
+        new = w.ticker[self.sent_ticker:]
+        self.sent_ticker = len(w.ticker)
+        if new:
+            self.send({"type": "ticker", "items": new, "total": len(w.ticker)})
+
+    def ch_messages(self, now):
+        w = self.w
+        if w.r.random() < 0.1:
+            w._new_message()
+        unread = {"highprio": sum(1 for m in w.inbox if m["cat"] == "highprio" and not m["rd"]),
+                  "lowprio": sum(1 for m in w.inbox if m["cat"] == "lowprio" and not m["rd"])}
+        self.send({"type": "messages", "items": w.inbox[-40:], "unread": unread})
+
+    def ch_missions(self, now):
+        for m in self.w.missions:
+            if m["dur"] and m["dur"] > 0:
+                m["dur"] = max(0, m["dur"] - 3)
+        self.send({"type": "missions", "items": [{k: v for k, v in m.items() if v is not None} for m in self.w.missions]})
+
+    def ch_offers(self, now):
+        self.send({"type": "offers", "items": self.w.offers})
+
+    def ch_factions(self, now):
+        self.send({"type": "factions", "items": self.w.factions})
+
+    def ch_economy(self, now):
+        r = self.w.r
+        top = [{"t": round(self.w.gametime - r.uniform(0, 3600)), "mo": r.choice([-1, 1]) * r.randint(10000, 2000000),
+                "ty": r.choice(["Kereskedés", "Javítás", "Hajóvásárlás", "Fizetés"]), "pa": r.choice(list(self.w.ships.values()))["n"],
+                "w": "energycells", "wn": "Energiacellák", "am": r.randint(10, 5000)} for _ in range(10)]
+        top.sort(key=lambda e: -abs(e["mo"]))
+        self.send({"type": "economy", "window": 3600, "gt": round(self.w.gametime), "count": 812,
+                   "inc": 18_500_000, "exp": 7_250_000,
+                   "bytype": [{"n": "Kereskedés", "mo": 15_200_000}, {"n": "Hajóvásárlás", "mo": -5_100_000},
+                              {"n": "Javítás", "mo": -900_000}, {"n": "Küldetés jutalom", "mo": 3_300_000}],
+                   "top": top, "partners": [{"n": s["n"] + " (" + s["code"] + ")", "mo": r.randint(100000, 4000000)}
+                                            for s in list(self.w.ships.values())[:8]],
+                   "money": self.w.money})
+
+    def ch_stats(self, now):
+        r = self.w.r
+        chs = {k: {"avg": round(r.uniform(0.002, 0.06), 4), "max": round(r.uniform(0.05, 0.5), 3), "pass": round(r.uniform(0.05, 3), 3),
+                   "iv": v, "err": 0, "runs": int(now / v)} for k, v in self.INTERVALS.items()}
+        self.send({"type": "stats", "span": 2.0, "frames": 120, "frame": {"avg": round(r.uniform(0.08, 0.3), 4), "max": round(r.uniform(0.4, 0.9), 3)},
+                   "ch": chs, "srcoff": [], "srcerr": {}, "pending": 0, "sent": sum(self.counts.values()), "bytes": self.nbytes,
+                   "dropped": 0, "wfail": self.cli.failed, "cmds": self.cmds, "gates": "received", "ngates": len(self.w.gates),
+                   "hk": 11 if self.a.hotkeys else 0, "timer": "qpc", "nframe": int(now * 60), "nmd": 0, "watch": self.watch})
+
+    # ---------------------------------------------------------------- commands
+    def handle_cmd(self, line: str) -> None:
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "cmd":
+            print(f"[sim] ignored pipe line {line[:60]!r}", flush=True)
+            return
+        seq, name, args = int(parts[1]), parts[2], parts[3:]
+        self.cmds += 1
+        ok, msg = True, "ok"
+        if name not in self.allow:
+            ok, msg = False, "a parancs nincs engedélyezve a modban (x4_companion.lua CFG.allow)"
+        elif name == "resync":
+            self.resync()
+            msg = "újraküldés"
+        elif name == "watch" and args and args[0] != "0" and args[0] not in self.w.known:
+            ok, msg = False, "ismeretlen szektor"
+        elif name == "watch":
+            self.watch = args[0] if args and args[0] != "0" else None
+            self.due["sector"] = 0
+            msg = "figyelt szektor beállítva" if self.watch else "figyelt szektor törölve"
+        elif name in ("openmap", "select"):
+            msg = "térkép megnyitva (szimuláció)"
+        elif name == "target":
+            self.w.target = args[0]
+            msg = "célpont beállítva"
+        elif name in ("guidance", "guidance_end"):
+            msg = "útvonal beállítva" if name == "guidance" else "útvonal törölve"
+        elif name == "stop":
+            s = self.w.ships.get(args[0])
+            if s:
+                s.update(od="Wait", on="Várakozás", os="Vár", vx=0.0, vz=0.0)
+                msg = "parancsok törölve, várakozik"
+            else:
+                ok, msg = False, "nem saját hajó"
+        elif name == "flyto":
+            s = self.w.ships.get(args[0])
+            if s and args[1] in self.w.sectors:
+                s.update(od="MoveWait", on="Repülés és várakozás", os="Úton")
+                msg = "repülés a szektorba"
+            else:
+                ok, msg = False, "érvénytelen hajó vagy szektor"
+        self.send({"type": "ack", "seq": seq, "cmd": name, "ok": ok, "msg": msg})
+
+    # ---------------------------------------------------------------- loop
+    def tick(self, now: float) -> None:
+        if not self.connected:
+            if now - self.last_hello >= 2.0:
+                self.last_hello = now
+                self.session += 1
+                if self.send({"type": "hello", "mod": "x4_companion", "ver": "100", "session": self.session,
+                              "allow": sorted(self.allow), "hotkeys": 11 if self.a.hotkeys else 0,
+                              "loglib": True, "timer": "qpc"}):
+                    self.connected = True
+                    self.resync()
+            return
+        for line in self.cli.read_all():
+            self.handle_cmd(line)
+        for ch, iv in self.INTERVALS.items():
+            if now >= self.due[ch]:
+                self.due[ch] = now + iv / self.a.speed
+                getattr(self, "ch_" + ch)(now)
+                if not self.connected:
+                    return
+        if self.a.junk and now - self.last_junk > 5.0:
+            self.last_junk = now
+            self.cli.write(b"this is not json\n")
+            self.cli.write(b'{"type":"player","name":"raw\x1b[icon]esc"}\n')   # raw control char: invalid JSON
+            self.cli.write(b'[1,2,3]\n')
+        if self.a.hotkeys and now - self.last_hotkey > 3.0:
+            self.last_hotkey = now
+            acts = ["view_toggle", "zoom_in", "ship_next", "panel_next", "log_down", "zoom_out", "show_selected", "auto"]
+            act = acts[self.hotkey_i % len(acts)]
+            self.hotkey_i += 1
+            obj = None
+            if act == "show_selected":
+                obj = next(iter(self.w.ships))
+            self.send({"type": "hotkey", "action": act, "obj": obj, "t": round(now, 3)})
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pipe", default="x4companion")
+    ap.add_argument("--ships", type=int, default=300)
+    ap.add_argument("--seconds", type=float, default=0, help="0 = run until Ctrl+C")
+    ap.add_argument("--speed", type=float, default=1.0, help="channel rate multiplier")
+    ap.add_argument("--mode", choices=["message", "byte"], default="message")
+    ap.add_argument("--junk", action="store_true")
+    ap.add_argument("--bad-bytes", action="store_true")
+    ap.add_argument("--hotkeys", action="store_true")
+    ap.add_argument("--allow-orders", action="store_true")
+    ap.add_argument("--gc-on-exit", action="store_true")
+    ap.add_argument("--pause-at", type=float, default=0)
+    ap.add_argument("--pause-for", type=float, default=0)
+    ap.add_argument("--seed", type=int, default=42)
+    a = ap.parse_args()
+
+    world = World(a.ships, a.seed, a.bad_bytes)
+    cli = SnLikeClient(a.pipe, a.mode)
+    br = Bridge(world, cli, a)
+    t0 = time.monotonic()
+    last = t0
+    frame = 1 / 60
+    try:
+        while a.seconds <= 0 or time.monotonic() - t0 < a.seconds:
+            now = time.monotonic()
+            el = now - t0
+            dt = now - last
+            last = now
+            if a.pause_at and a.pause_at <= el < a.pause_at + a.pause_for:
+                if not br.paused:
+                    br.paused = True
+                    br.ch_player(el)          # the last message before X4 stops: paused:true
+                    print("[sim] paused / focus lost: silence", flush=True)
+                time.sleep(0.05)
+                continue
+            if br.paused:
+                br.paused = False
+                print("[sim] resumed", flush=True)
+            world.step(dt)
+            br.tick(el)
+            time.sleep(max(0.0, frame - (time.monotonic() - now)))
+    except KeyboardInterrupt:
+        pass
+    if a.gc_on_exit and cli.h is not None:
+        cli.write(b"garbage_collected")
+    cli.close()
+    print(f"[sim] done: {cli.ok_writes} writes ok, {cli.failed} failed, {br.cmds} commands, "
+          f"{br.nbytes} bytes, per type {json.dumps(br.counts)}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

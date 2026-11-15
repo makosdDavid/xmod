@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Same loading mechanism as v0 (dev\x4_webmap\ui.xml, verified in the real game 2026-11-14):
+     a menus-environment addon that depends on the SN addon ("sn_mod_support_apis", which itself
+     depends on ego_detailmonitor/ego_interactmenu), so the vanilla menu cdefs, Helper and the SN
+     require() patch exist before this file runs. The optional Hotkey API / Lua Log API are NOT
+     listed here on purpose: an addon dependency on a missing addon stops the addon from loading
+     (lua_log_api README, "optional dependency"); both are looked up at call time instead. -->
+<addon name="x4_companion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../ui/core/addon.xsd">
+  <environment type="menus">
+    <file name="ui/x4_companion.lua" />
+    <dependency name="ego_detailmonitor" />
+    <dependency name="ego_interactmenu" />
+    <dependency name="sn_mod_support_apis" />
+  </environment>
+</addon>

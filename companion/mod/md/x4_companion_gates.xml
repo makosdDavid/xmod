@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gate enumeration for x4_companion: the UI Lua has no gate enumerator (no Get*Gates in the 9.00
+     ui cdefs), MD does. On request from Lua (AddUITriggeredEvent("x4companion", "gates")) this
+     raises one Lua event per active jump gate in the galaxy; Lua reads sector, destination and the player's knowledge itself (only known gates leave the game)
+     (GetComponentData(gate, "destination"), vanilla menu_map.lua:14893).
+     Patterns: event_ui_triggered round-trip (KNOWLEDGEBASE.md "event_ui_triggered round-trip");
+     find_gate with the 9.0-required space= : vanilla md\lib_generic.xml:1173 (active="true"),
+     md\scenario_tutorials.xml:4520 (space="player.galaxy" multiple="true");
+     raise_lua_event with a component param: vanilla md\cover.xml:397.
+     Instantiated cue, local variables only: nothing persists in the save. -->
+<mdscript name="X4Companion_Gates" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="GateRequest" instantiate="true">
+      <conditions>
+        <event_ui_triggered screen="'x4companion'" control="'gates'" />
+      </conditions>
+      <actions>
+        <find_gate name="$Gates" space="player.galaxy" active="true" multiple="true" />
+        <raise_lua_event name="'x4companion.gatesBegin'" param="$Gates.count" />
+        <do_all exact="$Gates.count" counter="$i">
+          <raise_lua_event name="'x4companion.gate'" param="$Gates.{$i}" />
+        </do_all>
+        <!-- superhighway entry gates: md\lib_generic.xml:1174 (superhighwaygate="true" active="true") -->
+        <find_highway_entry_gate name="$Highways" superhighwaygate="true" space="player.galaxy" multiple="true" />
+        <do_all exact="$Highways.count" counter="$i">
+          <raise_lua_event name="'x4companion.hwgate'" param="$Highways.{$i}" />
+        </do_all>
+        <raise_lua_event name="'x4companion.gatesEnd'" param="$Gates.count" />
+      </actions>
+    </cue>
+  </cues>
+</mdscript>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- X4 WebMap bridge: streams the player's sector + own ships as JSON lines through the
+     SirNukes named-pipe API to a local server (tools\x4webmap). UI-only, no game state:
+     save="0" so it can be removed from a save at any time. -->
+<content id="x4_webmap"
+         name="X4 WebMap Bridge"
+         description="Live 2D sector map on a second monitor (browser) via SirNukes named pipes."
+         author="local"
+         version="010"
+         date="2026-11-14"
+         save="0"
+         enabled="1">
+  <!-- id as declared in extensions\sn_mod_support_apis\content.xml (id="ws_2042901274", version="195") -->
+  <dependency id="ws_2042901274" optional="false" name="SirNukes Mod Support APIs" version="195" />
+</content>
