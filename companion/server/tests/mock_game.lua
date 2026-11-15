@@ -143,6 +143,41 @@ C.GetDiscoveredSectorResources = function(buf, n, id)
     for i = 0, n - 1 do buf[i].ware = cs(i == 0 and "ore" or "silicon"); buf[i].current = 50; buf[i].max = 100 end
     return n
 end
+-- v1.2 resource areas: an ore blob, a silicon blob and an (undiscovered) nividium blob in every sector
+MOCK.mineable_calls = 0
+local function mineablesAt(pos)
+    local out = {}
+    local function blob(ware, cx, cz, r, amt)
+        local d = math.sqrt((pos.x - cx) ^ 2 + (pos.z - cz) ^ 2)
+        if d < r then out[#out + 1] = { ware, math.floor(amt * (1 - d / r)) + 1 } end
+    end
+    blob("ore", 50000, 30000, 40000, 80)
+    blob("silicon", -60000, -20000, 30000, 60)
+    blob("nividium", 0, 120000, 30000, 90)
+    return out
+end
+C.GetNumMineablesAtSectorPos = function(sec, pos) MOCK.mineable_calls = MOCK.mineable_calls + 1; return #mineablesAt(pos) end
+C.GetMineablesAtSectorPos = function(buf, n, sec, pos)
+    MOCK.mineable_calls = MOCK.mineable_calls + 1
+    local m = mineablesAt(pos)
+    for i = 1, math.min(n, #m) do buf[i - 1].wareid = cs(m[i][1]); buf[i - 1].amount = m[i][2] end
+    return math.min(n, #m)
+end
+-- v1.2 local highways: one lane, spline nodes relative to the highway zone at (100 km, 0)
+W.hwzone, W.hwentry = 9001, 9002
+W.objs[W.hwzone] = { class = "highway", name = "Local Highway", x = 100000, z = 0 }
+W.objs[W.hwentry] = { class = "highwayentrygate", name = "Entry", x = 100000, z = 0 }
+local HW_NODES = { { 0, 0, 1, 0, 0, 20000 }, { 60000, 30000, 0, 1, 20000, 0 } }   -- x, z, tx, tz, in, out
+C.GetNumHighwaySplinePoints = function(hw) return n64(hw) == W.hwzone and #HW_NODES or 0 end
+C.GetHighwaySplinePoints = function(buf, n, hw)
+    for i = 1, math.min(n, #HW_NODES) do
+        local d = HW_NODES[i]
+        buf[i - 1].offset.x, buf[i - 1].offset.y, buf[i - 1].offset.z = d[1], 0, d[2]
+        buf[i - 1].tangent.x, buf[i - 1].tangent.y, buf[i - 1].tangent.z = d[3], 0, d[4]
+        buf[i - 1].inlength, buf[i - 1].outlength, buf[i - 1].weight = d[5], d[6], 1
+    end
+    return math.min(n, #HW_NODES)
+end
 C.GetNumAllFactionShips = function(f) return #W.playerships end
 C.GetAllFactionShips = function(buf, n, f) for i = 0, n - 1 do buf[i] = W.playerships[i + 1] end; return n end
 C.GetNumAllFactionStations = function(f) return #W.playerstations end
@@ -325,6 +360,14 @@ function AddUITriggeredEvent(screen, control)
         MOCK.events["x4companion.gates"]("x4companion.gates", #W.gates)
         -- a duplicate delivery in the same frame must not wipe the list
         MOCK.events["x4companion.gates"]("x4companion.gates", #W.gates)
+    end
+    if screen == "x4companion" and control == "sectorinfo" and MOCK.events["x4companion.sectorinfo"] then
+        -- what md\x4_companion_sector.xml does: [sector, coresize, coreposition.x, .z, iscontested]
+        local sec = W.objs[W.player].sector
+        SetNPCBlackboard(W.player, "$x4companion_sectorinfo", { ConvertStringToLuaID(tostring(sec)), 400000, 10000, -5000, sec == 520 })
+        SetNPCBlackboard(W.player, "$x4companion_highways", { { ConvertStringToLuaID(tostring(W.hwzone)), ConvertStringToLuaID(tostring(W.hwentry)) } })
+        MOCK.events["x4companion.sectorinfo"]("x4companion.sectorinfo", nil)
+        MOCK.events["x4companion.sectorinfo"]("x4companion.sectorinfo", nil)   -- duplicate delivery: harmless
     end
 end
 -- the game map's colours (helper.lua:13070 order); mock values only

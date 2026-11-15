@@ -93,7 +93,7 @@ def main() -> int:
     badname = [n for n in names if n.startswith("Bad")]
     check(badname and "�" not in badname[0] and "\x1b" not in badname[0] and '"q"' in badname[0],
           f"invalid UTF-8 / ESC codes cleaned, quotes kept: {badname[:1]!r}")
-    gates = [g for m in msgs if m["type"] == "gates" for g in m["items"]]
+    gates = [m for m in msgs if m["type"] == "gates"][-1]["items"]          # the latest complete list (v1.2 refreshes it more often)
     check(len(gates) == 14 and sum(1 for g in gates if g.get("ds")) >= 12, f"gates via MD round trip: {len(gates)} known ({sum(1 for g in gates if g.get('ds'))} with known destination)")
     ug = [g for g in gates if g["id"] == str(int(M.W.unknowngate))]
     check(ug and ug[0].get("du") and "ds" not in ug[0], "gate into an undiscovered sector: destination sent only as '?' (du), no id")
@@ -360,6 +360,59 @@ def main() -> int:
     check(pl3 and pl3[0]["sector"]["id"] == "520", "player message reports the new sector")
     check(got_gal is not None and got_gal <= 30, f"sector change -> galaxy with the newly discovered sector within {got_gal} frames (was: next 60 s pass)")
     check(got_scan is not None and got_scan <= 30, f"sector change -> scan of the new sector within {got_scan} frames")
+
+    # v1.2: the new sector's real core size (MD -> blackboard) and its resource areas (sliced sampling)
+    calls0 = int(M3.mineable_calls)
+    frames, res_msgs, si_msgs, max_step_calls, prev = 0, [], [], 0, calls0
+    # (the server forwards only known message types: both ride along with the sector scan as pseudo objects)
+    while frames < 900 and not any(m.get("w") for m in res_msgs):
+        M3.frame(1 / 60)
+        frames += 1
+        c = int(M3.mineable_calls)
+        max_step_calls, prev = max(max_step_calls, c - prev), c
+        new = [json.loads(s) for s in list(M3.out.values())[n7:]]
+        scans = [m for m in new if m["type"] == "sector" and m.get("sid") == "520"]
+        res_msgs = [o for m in scans for o in m["items"] if o.get("c") == "x4c_resarea"]
+        si_msgs = [o for m in scans for o in m["items"] if o.get("c") == "x4c_sectorinfo"]
+    si = si_msgs
+    check(si and si[0].get("core") == 400000 and si[0].get("cx") == 10000 and si[0].get("cz") == -5000 and si[0].get("contested") is True,
+          f"sector change -> sectorinfo from MD in the scan: core size, core centre, contested ({si[:1]})")
+    latest = {}
+    for m in res_msgs:
+        latest[m["id"]] = m
+    wares = sorted({m.get("w") for m in latest.values() if m.get("w")})
+    items = [m["pts"][i:i + 3] for m in latest.values() for i in range(0, len(m.get("pts") or []), 3)]
+    check(items and set(wares) <= {"ore", "silicon"} and "ore" in wares and all(len(it) == 3 and it[2] > 0 for it in items),
+          f"resource areas of the new sector: {len(items)} cells of {wares} within {frames} frames (undiscovered nividium withheld)")
+    check(max_step_calls <= 160, f"resource sampling is sliced: at most {max_step_calls} engine calls per frame (budget 160)")
+    hw = [o for m in (json.loads(s) for s in list(M3.out.values())[n7:]) if m["type"] == "sector" and m.get("sid") == "520"
+          for o in m["items"] if o.get("c") == "x4c_highway"]
+    pts = hw[0]["pts"] if hw else []
+    check(hw and abs(pts[0] - 100) < 0.01 and abs(pts[1]) < 0.01 and abs(pts[-2] - 160) < 0.01 and abs(pts[-1] - 30) < 0.01 and len(pts) == 22,
+          f"local highway: spline sampled (11 points, zone offset applied, entry gate at the start) {pts[:4]}...{pts[-2:]}")
+    gates_after = [i for i, s in enumerate(list(M3.out.values())[n7:]) if '"type":"gates"' in s]
+    check(gates_after and gates_after[0] < 400, f"sector change -> the gate list is re-collected and sent at once (message #{gates_after[:1]} after the change)")
+    # a gate discovered while staying in the sector: MD event -> list re-collected within frames
+    for _ in range(3 * 60):
+        M3.frame(1 / 60)
+    n9 = len(M3.out)
+    M3.events["x4companion.gatesdirty"]("x4companion.gatesdirty", None)
+    frames_to = None
+    for f in range(1, 120):
+        M3.frame(1 / 60)
+        if any('"type":"gates"' in s for s in list(M3.out.values())[n9:]):
+            frames_to = f
+            break
+    check(frames_to is not None and frames_to <= 30, f"gate discovered (MD event) -> gate list re-sent within {frames_to} frames (was: up to 300 s)")
+    other = [(m.get("sid"), o["id"]) for m in (json.loads(s) for s in M3.out.values()) if m["type"] == "sector"
+             for o in m["items"] if str(o.get("c", "")).startswith("x4c_") and (not m.get("player") or o["id"].split(":")[1] != m.get("sid"))]
+    check(not other, f"resource areas / sector info only in the scan of the player's own sector ({other[:2]})")
+    n8 = len(M3.out)
+    for _ in range(10 * 60):
+        M3.frame(1 / 60)
+    later = [s for s in list(M3.out.values())[n8:] if '"x4c_resarea"' in s]
+    check(len(later) >= 1 and int(M3.mineable_calls) == c,
+          f"no further sampling while the player stays (refresh every 10 min); cached areas re-sent with every 10th scan ({len(later)} in 10 s)")
 
     failed = [w for ok, w in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

@@ -109,6 +109,11 @@ deftype("TickerCacheEntry", [[typedef struct { TickerCacheID id; double time; co
 deftype("MessageInfo", [[typedef struct { MessageID id; double time; const char* category; const char* title; const char* text; const char* source; UniverseID sourcecomponent; const char* interaction; UniverseID interactioncomponent; const char* interactiontext; const char* interactionshorttext; const char* cutscenekey; const char* entityname; const char* factionname; int64_t money; int64_t bonus; bool highlighted; bool isread; } MessageInfo;]])
 deftype("TransactionLogEntry", [[typedef struct { double time; int64_t money; int64_t entryid; const char* eventtype; const char* eventtypename; UniverseID partnerid; const char* partnername; const char* partneridcode; int64_t tradeentryid; const char* tradeeventtype; const char* tradeeventtypename; UniverseID buyerid; UniverseID sellerid; const char* ware; uint32_t amount; int64_t price; bool complete; } TransactionLogEntry;]])
 deftype("RelationRangeInfo", [[typedef struct { const char* name; const char* colorid; } RelationRangeInfo;]])
+-- v1.2 resource areas: menu_map.lua:464 (YieldInfo); Coord3D as passed in menu_interactmenu.lua:5889-5892
+deftype("Coord3D", [[typedef struct { float x; float y; float z; } Coord3D;]])
+deftype("YieldInfo", [[typedef struct { const char* wareid; int32_t amount; } YieldInfo;]])
+-- v1.2 local highways: menu_mapeditor.lua:40-46 (SplineData), :77 / :84 (GetHighwaySplinePoints / GetNumHighwaySplinePoints)
+deftype("SplineData", [[typedef struct { Coord3D offset; Coord3D tangent; float weight; float inlength; float outlength; } SplineData;]])
 
 deffn("UniverseID GetPlayerID(void);")
 deffn("UniverseID GetPlayerOccupiedShipID(void);")
@@ -127,6 +132,10 @@ deffn("float GetDistanceBetween(UniverseID component1id, UniverseID component2id
 deffn("UIPosRot GetPositionalOffset(UniverseID positionalid, UniverseID spaceid);")
 deffn("uint32_t GetNumDiscoveredSectorResources(UniverseID sectorid);")
 deffn("uint32_t GetDiscoveredSectorResources(WareYield* result, uint32_t resultlen, UniverseID sectorid);")
+deffn("uint32_t GetNumMineablesAtSectorPos(UniverseID sectorid, Coord3D position);")
+deffn("uint32_t GetMineablesAtSectorPos(YieldInfo* result, uint32_t resultlen, UniverseID sectorid, Coord3D position);")
+deffn("uint32_t GetNumHighwaySplinePoints(UniverseID highwayid);")
+deffn("uint32_t GetHighwaySplinePoints(SplineData* result, uint32_t resultlen, UniverseID highwayid);")
 deffn("uint32_t GetNumAllFactionShips(const char* factionid);")
 deffn("uint32_t GetAllFactionShips(UniverseID* result, uint32_t resultlen, const char* factionid);")
 deffn("uint32_t GetNumAllFactionStations(const char* factionid);")
@@ -208,6 +217,7 @@ local W = {
     frame_ms_sum = 0, frame_ms_max = 0, frame_n = 0,
     hk_registered = 0, hk_requested = false, hk_seen = false,
     gates_requested = -1e9, gates_pending = nil, gates_state = "none", gates = {}, gates_n = 0,
+    sectorinfo = {},                   -- v1.2: sector id -> { core, cx, cz, contested } from MD
 }
 
 -------------------------------------------------------------------------------
@@ -829,6 +839,20 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
             W.sector_changes = (W.sector_changes or 0) + 1
         end
         W.player_sector = sec
+        -- v1.2: resource areas of the new sector (sliced sampling, see channel "resources") and its real
+        -- core size / centre / contested state from MD (md\x4_companion_sector.xml)
+        if CH.resources then CH.resources.next_due = 0; CH.resources.want = true end
+        W.sectorinfo_due = 0
+        W.gates_due = 0                                  -- v1.2: gate list re-collected at once (MD), not in <= 60 s
+    end
+    if W.connected and W.sectorinfo_due and now >= W.sectorinfo_due then
+        W.sectorinfo_due = nil
+        S("si.request", AddUITriggeredEvent, "x4companion", "sectorinfo")
+    end
+    if W.connected and W.gates_due and now >= W.gates_due then
+        W.gates_due = nil
+        W.gates_requested = now
+        S("g.request", AddUITriggeredEvent, "x4companion", "gates")
     end
 
     -- where is the player: the object we follow is the one the player is in
@@ -940,8 +964,8 @@ defchan("galaxy", { every = 60, max = 300, budget = 0.04, steps = 2,
                 chunkFlush(ck, true)
                 if not ck.sent_ok then ch.state.sig = nil end
             end
-            -- gates follow the galaxy: request a fresh MD enumeration every 5 minutes or on resync
-            if ch.resync or (now - W.gates_requested) > 300 then
+            -- gates follow the galaxy: request a fresh MD enumeration every minute or on resync (v1.2; also on a sector change and on a gate discovery)
+            if ch.resync or (now - W.gates_requested) > 60 then
                 W.gates_requested = now
                 S("g.request", AddUITriggeredEvent, "x4companion", "gates")
                 if W.gates_state ~= "received" then W.gates_state = "requested" end
@@ -1042,7 +1066,9 @@ defchan("gates", { every = 5, max = 60, budget = 0.04, steps = 2,
             if S("c.valid", IsValidComponent, g) then
                 local sec = sectorOf(g)
                 local isknown, radar = S("gt.known", GetComponentData, g, "isknown", "isradarvisible")
-                if sectorKnown(sec, now) and isknown ~= false and radar ~= false then
+                -- v1.2: a known gate is shown whether or not it is in radar range right now (the game map draws
+                -- known gates natively; isradarvisible only matters for the object list, menu_map.lua:7563)
+                if sectorKnown(sec, now) and isknown ~= false then
                     local dest, isactive = S("gt.data", GetComponentData, g, "destination", "isactive")
                     local d64 = to64(dest)
                     local ds = d64 ~= 0 and sectorOf(d64) or 0
@@ -1051,6 +1077,194 @@ defchan("gates", { every = 5, max = 60, budget = 0.04, steps = 2,
                     -- destination only if that sector is known too; otherwise the game shows "?"
                     if ds ~= 0 and sectorKnown(ds, now) then e.ds = idstr(ds) elseif not hw or d64 ~= 0 then e.du = true end
                     chunkAdd(job.ck, e)
+                end
+            end
+        end
+        return false
+    end })
+
+-------------------------------------------------------------------------------
+-- v1.2: sector info (MD -> blackboard -> Lua, md\x4_companion_sector.xml) and resource areas
+
+-- Transport: the server forwards only the message types it knows, so both ride along with the player's
+-- sector scan as two pseudo object classes (x4c_sectorinfo, x4c_resarea) - right after they change and
+-- on every 10th scan (new browser tabs / reconnects); the browser takes them out of the object list.
+local function sendSectorInfo(sid) W.si_fresh = true end
+W.highways = {}
+
+-- v1.2 local highways of the player's sector: MD hands over [highway, entry gate] per lane; each lane's
+-- spline nodes (offset, tangent, in/out length) become a cubic Bezier sampled 10x per segment. The
+-- offsets are taken in sector coordinates if the first or last node lies at the entry gate, else
+-- relative to the highway zone's position (whichever matches the entry gate).
+local function readHighways(pid)
+    local list = S("hw.bb", GetNPCBlackboard, pid, "$x4companion_highways")
+    S("hw.bbclear", SetNPCBlackboard, pid, "$x4companion_highways", nil)
+    local out = {}
+    if type(list) ~= "table" then return out end
+    for _, lane in ipairs(list) do
+        local hw = type(lane) == "table" and to64(lane[1]) or 0
+        local entry = type(lane) == "table" and to64(lane[2]) or 0
+        local n = hw ~= 0 and (tonumber(S("hw.num", C.GetNumHighwaySplinePoints, hw)) or 0) or 0
+        if n >= 2 and n <= 200 then
+            local buf = ffi.new("SplineData[?]", n)
+            n = tonumber(S("hw.get", C.GetHighwaySplinePoints, buf, n, hw)) or 0
+            if n >= 2 then
+                local zx, _, zz = posOf(hw)
+                local ex, _, ez = posOf(entry)
+                local ox, oz = 0, 0
+                if zx and ex then
+                    local function d(px, pz) return math.min((buf[0].offset.x + px - ex) ^ 2 + (buf[0].offset.z + pz - ez) ^ 2,
+                        (buf[n - 1].offset.x + px - ex) ^ 2 + (buf[n - 1].offset.z + pz - ez) ^ 2) end
+                    if d(zx, zz) < d(0, 0) then ox, oz = zx, zz end
+                end
+                local pts = arr()
+                for i = 0, n - 2 do
+                    local a, b = buf[i], buf[i + 1]
+                    local p0x, p0z = a.offset.x + ox, a.offset.z + oz
+                    local p3x, p3z = b.offset.x + ox, b.offset.z + oz
+                    local p1x, p1z = p0x + a.tangent.x * a.outlength, p0z + a.tangent.z * a.outlength
+                    local p2x, p2z = p3x - b.tangent.x * b.inlength, p3z - b.tangent.z * b.inlength
+                    for k = (i == 0) and 0 or 1, 10 do
+                        local t = k / 10
+                        local u = 1 - t
+                        local x = u * u * u * p0x + 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t * p3x
+                        local z = u * u * u * p0z + 3 * u * u * t * p1z + 3 * u * t * t * p2z + t * t * t * p3z
+                        pts[#pts + 1] = round(x / 1000, 2); pts[#pts + 1] = round(z / 1000, 2)
+                    end
+                end
+                out[#out + 1] = pts
+            end
+        end
+    end
+    return out
+end
+local function onSectorInfo(_, param)
+    local pid = S("si.pid", ConvertStringTo64Bit, tostring(C.GetPlayerID()))
+    if not pid then return end
+    local list = S("si.bb", GetNPCBlackboard, pid, "$x4companion_sectorinfo")
+    S("si.bbclear", SetNPCBlackboard, pid, "$x4companion_sectorinfo", nil)
+    if type(list) ~= "table" or list[1] == nil then return end   -- a duplicate event of the same frame
+    local sec = to64(list[1])
+    if sec == 0 or not sectorKnown(sec) then return end
+    local sid = idstr(sec)
+    local core = tonumber(list[2])
+    W.highways[sid] = readHighways(pid)
+    W.si_fresh_hw = true
+    W.sectorinfo[sid] = { core = (core and core > 0) and round(core, 0) or nil,
+                          cx = round(tonumber(list[3]) or 0, 0), cz = round(tonumber(list[4]) or 0, 0),
+                          contested = (list[5] == true or list[5] == 1) }
+    sendSectorInfo(sid)
+    if CH.resources and not CH.resources.job then CH.resources.want = true; CH.resources.next_due = 0 end
+end
+
+-- Resource areas of the player's sector, like the game map's mining layer (the holomap draws its
+-- patches natively: SetMapRenderResourceInfo, menu_map.lua:5824). Sampled on a hex grid with
+-- GetMineablesAtSectorPos (menu_interactmenu.lua:5890-5892 "mine here"), reported only for the wares the
+-- player has discovered in that sector (GetDiscoveredSectorResources = the game's discovery rule).
+-- Cost: only after a sector change / reconnect / every 10 min, sliced over frames (RES_PER_STEP samples
+-- = 2 engine calls each per step), the result cached for resends.
+local RES_CELL, RES_RADIUS, RES_MAX_RADIUS, RES_PER_STEP, RES_REFRESH = 10000, 250000, 500000, 24, 600
+local resYield, resYieldCap, resPos = nil, 0, nil
+local function sendResources(st) W.res = st; W.res_fresh = true end
+-- the pseudo objects for the scan of sector sid (at most 1200 cells per object: one pipe message holds it)
+local function sectorExtras(sid, n)
+    local out = {}
+    local si = W.sectorinfo[sid]
+    if si and (W.si_fresh or n % 10 == 0) then
+        out[#out + 1] = { id = "si:" .. sid, c = "x4c_sectorinfo", core = si.core, cx = si.cx, cz = si.cz, contested = si.contested }
+        W.si_fresh = false
+    end
+    local hws = W.highways[sid]
+    if hws and (W.si_fresh_hw or n % 10 == 0) then
+        for k, pts in ipairs(hws) do out[#out + 1] = { id = "hw:" .. sid .. ":" .. k, c = "x4c_highway", pts = pts } end
+        W.si_fresh_hw = false
+    end
+    local st = W.res
+    if st and st.sid == sid and (W.res_fresh or n % 10 == 0) then
+        local per = {}
+        for _, it in ipairs(st.items) do
+            local w = st.wares[it[3] + 1]
+            per[w] = per[w] or {}
+            local p = per[w]
+            p[#p + 1] = it[1]; p[#p + 1] = it[2]; p[#p + 1] = it[4]
+        end
+        local k = 0
+        for _, w in ipairs(st.wares) do
+            local p = per[w] or {}
+            for i = 1, math.max(1, #p), 3600 do
+                k = k + 1
+                local part = arr()
+                for j = i, math.min(#p, i + 3599) do part[#part + 1] = p[j] end
+                out[#out + 1] = { id = "res:" .. sid .. ":" .. k, c = "x4c_resarea", w = w, cell = RES_CELL, gen = st.gen, pts = part }
+            end
+        end
+        if #st.wares == 0 then out[#out + 1] = { id = "res:" .. sid .. ":0", c = "x4c_resarea", cell = RES_CELL, gen = st.gen, pts = arr() } end
+        W.res_fresh = false
+    end
+    return out
+end
+defchan("resources", { every = 2, max = 20, budget = 0.06, steps = 3, delay = 4,
+    start = function(ch, now)
+        local pid = to64(S("p.id", C.GetPlayerID))
+        local sec = (pid ~= 0) and sectorOf(pid) or 0
+        if sec == 0 then return true end
+        local sid = idstr(sec)
+        local st = ch.state
+        if st.sid == sid and st.items and not ch.want then
+            if ch.resync then sendResources(st); sendSectorInfo(sid); return true end
+            if (now - (st.at or 0)) < RES_REFRESH then return true end
+        end
+        ch.want = false
+        local nres = tonumber(S("r.nres", C.GetNumDiscoveredSectorResources, sec)) or 0
+        local disc, any = {}, false
+        if nres > 0 then
+            local wb = ffi.new("WareYield[?]", nres)
+            local n = tonumber(S("r.disc", C.GetDiscoveredSectorResources, wb, nres, sec)) or 0
+            for i = 0, n - 1 do local w = cstr(wb[i].ware); if w then disc[w] = true; any = true end end
+        end
+        ch.state.gen = (ch.state.gen or 0) + 1
+        if not any then
+            ch.state = { sid = sid, wares = {}, items = {}, at = now, gen = ch.state.gen }
+            sendResources(ch.state)
+            return true
+        end
+        local si = W.sectorinfo[sid]
+        local radius = (si and si.core) and math.min(RES_MAX_RADIUS, si.core / 2 * 1.15) or RES_RADIUS
+        local h = RES_CELL * 0.8660254
+        local J, I = math.ceil(radius / h), math.ceil(radius / RES_CELL) + 1
+        if resPos == nil then resPos = ffi.new("Coord3D") end
+        return { sec = sec, sid = sid, disc = disc, cx = si and si.cx or 0, cz = si and si.cz or 0, radius = radius,
+                 h = h, J = J, I = I, j = -J, i = -I, wares = {}, wi = {}, items = {}, gen = ch.state.gen }
+    end,
+    step = function(ch, job, now)
+        if ch.want then return true end           -- the player moved on: start over for the new sector
+        local done, r2 = 0, job.radius * job.radius
+        while done < RES_PER_STEP do
+            if job.j > job.J then
+                ch.state = { sid = job.sid, wares = job.wares, items = job.items, at = now, gen = job.gen }
+                sendResources(ch.state)
+                return true
+            end
+            local x = job.i * RES_CELL + ((job.j % 2 ~= 0) and RES_CELL / 2 or 0)
+            local z = job.j * job.h
+            job.i = job.i + 1
+            if job.i > job.I then job.i = -job.I; job.j = job.j + 1 end
+            if x * x + z * z <= r2 then
+                done = done + 1
+                resPos.x, resPos.y, resPos.z = job.cx + x, 0, job.cz + z
+                local num = tonumber(S("r.num", C.GetNumMineablesAtSectorPos, job.sec, resPos)) or 0
+                if num > 0 then
+                    if num > resYieldCap then resYield = ffi.new("YieldInfo[?]", num); resYieldCap = num end
+                    local got = tonumber(S("r.get", C.GetMineablesAtSectorPos, resYield, num, job.sec, resPos)) or 0
+                    for k = 0, got - 1 do
+                        local w = cstr(resYield[k].wareid)
+                        local a = tonumber(resYield[k].amount) or 0
+                        if w and a > 0 and job.disc[w] then
+                            local wi = job.wi[w]
+                            if not wi then wi = #job.wares + 1; job.wares[wi] = w; job.wi[w] = wi end
+                            job.items[#job.items + 1] = arr({ round((job.cx + x) / 1000, 1), round((job.cz + z) / 1000, 1), wi - 1, a })
+                        end
+                    end
                 end
             end
         end
@@ -1179,6 +1393,7 @@ defchan("sector", { every = 1.0, max = 8.0, budget = 0.12, steps = 6,
             for _ = 1, 8 do
                 local o = job.ids[job.oi]
                 if o == nil then
+                    if job.ti == 1 then for _, e in ipairs(sectorExtras(idstr(job.sec), ch.state.n or 0)) do chunkAdd(job.ck, e) end end
                     job.ck.extra.n = #job.ids
                     job.ck.extra.hidden = job.hidden
                     job.ck.extra.skipped = job.skipped
@@ -2093,6 +2308,13 @@ local function init()
 
     pcall(RegisterEvent, "x4companion.mdTick", onMdTick)
     pcall(RegisterEvent, "x4companion.gates", onGates)
+    pcall(RegisterEvent, "x4companion.sectorinfo", onSectorInfo)
+    -- v1.2: MD (x4_companion_gates.xml GateDiscovered) - a gate / highway entry was just discovered:
+    -- re-collect the gate list now (at most once a second)
+    pcall(RegisterEvent, "x4companion.gatesdirty", function()
+        local now = realtime()
+        if (now - (W.gates_requested or -1e9)) >= 1 then W.gates_due = 0 end
+    end)
     pcall(RegisterEvent, "HotkeyApi.Register_Request", function() pcall(registerHotkeys) end)
 
     local startline = "v" .. VERSION .. " loaded (pipe \\\\.\\pipe\\" .. CFG.pipe_name .. ", timer " .. TIMER .. ")"

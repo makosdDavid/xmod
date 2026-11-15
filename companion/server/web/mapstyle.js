@@ -345,6 +345,49 @@ export function sectorMarkerSpots(r) {
   };
 }
 
+// ---------------------------------------------------------------- v1.2 bridge extras in the sector scan
+// The server forwards only message types it knows, so the bridge appends two pseudo object classes to
+// the player's sector scan: x4c_sectorinfo (MD: sector.coresize / coreposition / iscontested) and
+// x4c_resarea (discovered resource areas: {w, cell, pts:[x_km, z_km, amount, ...]}). A host takes them
+// out of the object list with this before storing the scan; S.sectorInfo / S.resources keep the last
+// ones per sector (a scan without them leaves them as they are). Old bridges send neither.
+export function takeSectorExtras(S, scan) {
+  if (!scan) return scan;
+  const objs = scan.objs || scan.items || [];
+  if (!objs.some((o) => o && typeof o.c === "string" && o.c.startsWith("x4c_"))) return scan;
+  const real = [], res = [], hws = [];
+  let si = null;
+  for (const o of objs) {
+    if (o && o.c === "x4c_highway") hws.push(o);
+    else if (o && o.c === "x4c_resarea") res.push(o);
+    else if (o && o.c === "x4c_sectorinfo") si = o;
+    else if (!(o && typeof o.c === "string" && o.c.startsWith("x4c_"))) real.push(o);
+  }
+  const sid = String(scan.sid);
+  S.sectorInfo = S.sectorInfo || {};
+  S.resources = S.resources || {};
+  S.highways = S.highways || {};
+  if (hws.length) S.highways[sid] = hws.map((h) => h.pts || []);
+  if (si) S.sectorInfo[sid] = { core: +si.core || null, cx: +si.cx || 0, cz: +si.cz || 0, contested: !!si.contested };
+  if (res.length) {
+    const byWare = {};
+    for (const r of res) if (r.w) (byWare[r.w] = byWare[r.w] || []).push(...(r.pts || []));
+    S.resources[sid] = { cell: +res[0].cell || 10000, gen: res[0].gen, areas: Object.entries(byWare).map(([w, pts]) => ({ w, pts })) };
+  }
+  const out = { ...scan, objs: real };
+  if (scan.items) out.items = real;
+  return out;
+}
+
+// the game map's resource colours with the mining filter on "all" (parameters.xml <resources>
+// mineralmapcolor / gasmapcolor / scrapmapcolor -> colors.xml orange_dark / cyan_dark / grey_192)
+export const RESOURCE_CATEGORY = {
+  ore: "mineral", silicon: "mineral", ice: "mineral", nividium: "mineral",
+  hydrogen: "gas", helium: "gas", methane: "gas", rawscrap: "scrap", rawkhaakscrap: "scrap",
+};
+export const RESOURCE_COLOR = { mineral: { r: 179, g: 97, b: 0 }, gas: { r: 0, g: 175, b: 179 }, scrap: { r: 192, g: 192, b: 192 } };
+export const resourceCategory = (w) => RESOURCE_CATEGORY[w] || "mineral";
+
 // ---------------------------------------------------------------- sector border (sector view)
 // The game frames a sector with a flat-top hexagon around its explored area. The 9.00 UI Lua exposes
 // no sector extent (the holomap draws it natively; MD has sector.coresize/coreposition, which the

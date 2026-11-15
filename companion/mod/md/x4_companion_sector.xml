@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sector extent for x4_companion (v1.2). The UI Lua has no sector size function (the holomap draws
+     the sector frame natively); MD has sector.coresize ("the diameter of the area considered the core
+     of the sector") and sector.coreposition (its centre, sector coordinates), plus sector.iscontested
+     (scriptproperties.xml, datatype sector). On request from Lua (AddUITriggeredEvent("x4companion",
+     "sectorinfo"), sent when the player enters a sector) MD writes them for the player's sector on the
+     player's blackboard and raises ONE Lua event; Lua reads and clears the list (same hand-over as
+     md\x4_companion_gates.xml). SectorInfoCleanup removes it after 5 s in any case. -->
+<mdscript name="X4Companion_Sector" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="SectorInfoRequest" instantiate="true">
+      <conditions>
+        <event_ui_triggered screen="'x4companion'" control="'sectorinfo'" />
+      </conditions>
+      <actions>
+        <do_if value="player.sector">
+          <set_value name="player.entity.$x4companion_sectorinfo"
+                     exact="[player.sector, player.sector.coresize, player.sector.coreposition.x, player.sector.coreposition.z, player.sector.iscontested]" />
+          <!-- v1.2: the sector's local highways (the game map draws them for a known sector): one entry gate
+               per highway lane; Lua reads each lane's spline (GetHighwaySplinePoints, menu_mapeditor.lua:77) -->
+          <find_highway_entry_gate name="$LocalEntries" superhighwaygate="false" space="player.sector" multiple="true" />
+          <create_list name="$Lanes" />
+          <do_all exact="$LocalEntries.count" counter="$i">
+            <do_if value="$LocalEntries.{$i}.highway">
+              <append_to_list name="$Lanes" exact="[$LocalEntries.{$i}.highway, $LocalEntries.{$i}]" />
+            </do_if>
+          </do_all>
+          <set_value name="player.entity.$x4companion_highways" exact="$Lanes" />
+          <raise_lua_event name="'x4companion.sectorinfo'" param="player.sector" />
+        </do_if>
+      </actions>
+      <cues>
+        <cue name="SectorInfoCleanup">
+          <delay exact="5s" />
+          <actions>
+            <remove_value name="player.entity.$x4companion_sectorinfo" />
+            <remove_value name="player.entity.$x4companion_highways" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

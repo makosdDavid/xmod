@@ -137,6 +137,16 @@ returns their rectangles (tests use it).
   inner glow, black outside. **Approximation** (the UI Lua has no sector extent): centred on the sector
   origin, apothem = everything known (objects, own radar circles) × 1.06, min 60 km
   (`sectorHexApothem`); it only grows, eases in, holds while dragging; "fit" frames it.
+* Names (v1.2): always for gates / accelerators / superhighways, abandoned ships and the selected /
+  targeted / hovered object (never overlapping each other or route labels: free spot → stepped →
+  abbreviated → leader line). "When zoomed in" = density based: own property, mission targets, stations,
+  ships, others (nearest to the centre first) get a name where it overlaps no other name or icon.
+  "Always" = every object; "never" = only the always-on names.
+* v1.2 bridge extras ride along with the player's sector scan as pseudo objects `x4c_sectorinfo`
+  (MD `coresize` / `coreposition` / `iscontested`) and `x4c_resarea` (`{w, cell, pts:[x_km, z_km, amount…]}`):
+  hosts call `takeSectorExtras(S, scan)` (mapstyle.js) before storing a scan; it fills `S.sectorInfo` /
+  `S.resources`. With them the border is the core hexagon (apothem = coresize / 2 around coreposition,
+  contested dashed); resource areas are drawn under everything (layer `resources`, default on).
 * Ship icons rotate only with the "Ship heading" layer (`headingOf`, default `headingFromYaw`: yaw in
   radians, clockwise from north/+z; verified against live movement, see `tests/test_mapstyle.mjs`).
 * Galaxy view: one flat-top hexagon per cluster (radius = the cluster grid edge, 1e7 m) with an

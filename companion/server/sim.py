@@ -656,9 +656,50 @@ class Bridge:
                 e["code"] = o.get("code")
             e["r"] = next((f[4] for f in FACTIONS if f[0] == o["o"]), 0)
             objs.append(e)
+        if is_player:
+            objs.extend(self.sector_extras(sid))
         self.n_sector += 1
         self.chunks("sector", objs, {"sid": sid, "gen": self.n_sector, "player": is_player, "n": len(objs) + hidden,
                                      "hidden": hidden, "skipped": 0, "full": False})
+
+    def sector_extras(self, sid: str) -> list[dict]:
+        """What the v1.2 bridge appends to the player's sector scan (pseudo objects, see x4_companion.lua
+        sectorExtras): the sector's core size / centre / contested state (MD) and the resource areas of
+        the wares discovered there (sampled every 10 km). Deterministic per sector, own RNG."""
+        se = self.w.sectors[sid]
+        rr = random.Random(int(sid) * 7919)
+        out = [{"id": "si:" + sid, "c": "x4c_sectorinfo", "core": rr.randint(260, 460) * 1000,
+                "cx": rr.randint(-20, 20) * 1000, "cz": rr.randint(-20, 20) * 1000, "contested": rr.random() < 0.15}]
+        # a local highway (two lanes) in most sectors, always in the start sector (deterministic tests)
+        if rr.random() < 0.6 or sid == self.w.home[0]:
+            p0 = (rr.uniform(-150, -60), rr.uniform(-150, 150))
+            p2 = (rr.uniform(60, 150), rr.uniform(-150, 150))
+            p1 = ((p0[0] + p2[0]) / 2 + rr.uniform(-40, 40), (p0[1] + p2[1]) / 2 + rr.uniform(-60, 60))
+            lane = []
+            for i in range(21):
+                t = i / 20
+                lane += [round((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0], 2),
+                         round((1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1], 2)]
+            back = []
+            for i in range(len(lane) - 2, -1, -2):
+                back += [lane[i], lane[i + 1]]
+            out += [{"id": f"hw:{sid}:1", "c": "x4c_highway", "pts": lane}, {"id": f"hw:{sid}:2", "c": "x4c_highway", "pts": back}]
+        cell = 10000
+        for k, res in enumerate(se.get("res") or []):
+            ware = res["w"]
+            pts = []
+            for _ in range(rr.randint(1, 3)):            # 1-3 blobs per ware
+                bx, bz, br = rr.uniform(-150000, 150000), rr.uniform(-150000, 150000), rr.uniform(25000, 60000)
+                h = cell * math.sqrt(3) / 2
+                for j in range(int(-br / h) - 1, int(br / h) + 2):
+                    for i in range(int(-br / cell) - 1, int(br / cell) + 2):
+                        x = bx + i * cell + (cell / 2 if j % 2 else 0)
+                        z = bz + j * h
+                        d = math.hypot(x - bx, z - bz)
+                        if d < br:
+                            pts += [round(x / 1000, 1), round(z / 1000, 1), max(1, int(res["c"] * (1 - d / br)))]
+            out.append({"id": f"res:{sid}:{k + 1}", "c": "x4c_resarea", "w": ware, "cell": cell, "gen": 1, "pts": pts})
+        return out
 
     def ch_sector(self, now):
         self.scan_sector(self.w.player_sector, True)
@@ -870,6 +911,77 @@ class Bridge:
             self.send({"type": "hotkey", "action": act, "obj": obj, "t": round(now, 3)})
 
 
+class ReplayBridge(Bridge):
+    """--replay FILE: plays a live server snapshot (GET /api/state, read-only) back through the pipe as
+    the bridge would send it - the same galaxy, gates, sector scans, property, player, theme... - so the
+    browser checks run on real data shapes. No simulation: like a paused game, nothing moves; the
+    player / scans are re-sent on their usual intervals (--replay-frozen: player only once)."""
+
+    def __init__(self, snap: dict, cli: SnLikeClient, args):
+        self.snap = snap
+        self.cli = cli
+        self.a = args
+        self.connected = False
+        self.last_hello = -1e9
+        self.session = 0
+        self.counts, self.nbytes, self.cmds, self.paused = {}, 0, 0, True
+        self.due = {"player": 0.0, "sector": 0.0, "galaxy": 0.0, "slow": 0.0}
+        self.gen = 0
+
+    def strip(self, m: dict | None) -> dict | None:
+        if not isinstance(m, dict):
+            return None
+        return {k: v for k, v in m.items() if k not in ("rx", "v", "src")}
+
+    def full(self) -> None:
+        s = self.snap
+        self.gen += 1
+        self.chunks("galaxy", s.get("galaxy") or [], {"gen": self.gen})
+        self.chunks("gates", s.get("gates") or [], {"n": len(s.get("gates") or [])})
+        for k in ("theme", "factions", "missions", "offers", "economy", "messages"):
+            m = self.strip(s.get(k))
+            if m:
+                self.send(m)
+        prop = s.get("property") or []
+        self.chunks("property", prop, {"gen": self.gen})
+        self.send({"type": "property_end", "gen": self.gen, "ids": [str(e.get("id")) for e in prop],
+                   "ships": (s.get("property_meta") or {}).get("ships"), "stations": (s.get("property_meta") or {}).get("stations")})
+
+    def scans(self) -> None:
+        for sid, rec in (self.snap.get("sectors") or {}).items():
+            self.gen += 1
+            self.chunks("sector", rec.get("objs") or [], {"sid": sid, "gen": self.gen, "player": bool(rec.get("player")),
+                                                          "n": rec.get("n"), "hidden": rec.get("hidden"), "skipped": rec.get("skipped") or 0,
+                                                          "full": bool(rec.get("full"))})
+
+    def tick(self, now: float) -> None:
+        if not self.connected:
+            if now - self.last_hello >= 2.0:
+                self.last_hello = now
+                self.session += 1
+                h = dict((self.snap.get("hello") or {}), type="hello", session=self.session)
+                h.pop("at", None)
+                if self.send(h):
+                    self.connected = True
+                    self.full()
+                    self.scans()
+            return
+        self.cli.read_all()                     # commands are not answered (a paused game)
+        if now >= self.due["player"]:
+            self.due["player"] = now + (1e9 if self.a.replay_frozen else 0.25)
+            p = self.strip(self.snap.get("player"))
+            if p:
+                p["t"] = round(now, 3)
+                self.send(p)
+        if now >= self.due["sector"]:
+            self.due["sector"] = now + (1e9 if self.a.replay_frozen else 1.0)
+            self.scans()
+        if now >= self.due["galaxy"]:
+            self.due["galaxy"] = now + 60.0
+            if self.gen > 2:
+                self.full()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--pipe", default="x4companion")
@@ -888,7 +1000,24 @@ def main() -> int:
     ap.add_argument("--discover", action="store_true", help="fly into undiscovered sectors (sector-change / discovery scenario)")
     ap.add_argument("--galaxy-on-jump", action="store_true", help="send galaxy + sector at once on a sector change (bridge since M6)")
     ap.add_argument("--player-speed", type=float, default=2500.0)
+    ap.add_argument("--replay", type=Path, default=None, help="play a live snapshot (GET /api/state JSON) back instead of simulating")
+    ap.add_argument("--replay-frozen", action="store_true", help="replay: send player and scans only once (no new snapshots)")
     a = ap.parse_args()
+
+    if a.replay:
+        snap = json.loads(Path(a.replay).read_text(encoding="utf-8"))
+        cli = SnLikeClient(a.pipe, a.mode)
+        br = ReplayBridge(snap, cli, a)
+        t0 = time.monotonic()
+        try:
+            while a.seconds <= 0 or time.monotonic() - t0 < a.seconds:
+                br.tick(time.monotonic() - t0)
+                time.sleep(1 / 60)
+        except KeyboardInterrupt:
+            pass
+        cli.close()
+        print(f"[sim] replay done: {json.dumps(br.counts)}", flush=True)
+        return 0
 
     world = World(a.ships, a.seed, a.bad_bytes)
     world.discover = a.discover

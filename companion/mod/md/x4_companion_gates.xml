@@ -20,12 +20,24 @@
      them after 5 s in any case, so nothing stays in a save. -->
 <mdscript name="X4Companion_Gates" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
   <cues>
+    <!-- v1.2: a gate / accelerator / highway entry the player has just discovered -> Lua re-collects the
+         gate list at once (instead of waiting for the periodic collection) -->
+    <cue name="GateDiscovered" instantiate="true">
+      <conditions>
+        <event_player_discovered_object />
+        <check_value value="event.param and (event.param.isclass.gate or event.param.isclass.highwayentrygate)" />
+      </conditions>
+      <actions>
+        <raise_lua_event name="'x4companion.gatesdirty'" />
+      </actions>
+    </cue>
     <cue name="GateRequest" instantiate="true">
       <conditions>
         <event_ui_triggered screen="'x4companion'" control="'gates'" />
       </conditions>
       <actions>
-        <find_gate name="$Gates" space="player.galaxy" active="true" multiple="true" />
+        <!-- v1.2: active AND inactive gates (the game map shows inactive ones greyed; Lua sends isactive as "a") -->
+        <find_gate name="$Gates" space="player.galaxy" multiple="true" />
         <find_highway_entry_gate name="$Highways" superhighwaygate="true" space="player.galaxy" multiple="true" />
         <set_value name="player.entity.$x4companion_gates" exact="$Gates" />
         <set_value name="player.entity.$x4companion_hwgates" exact="$Highways" />

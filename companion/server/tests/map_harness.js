@@ -1,7 +1,7 @@
 // Browser integration tests of the real map module (web/map.js) with a fake store/bus.
 // Run by tests/test_map_browser.py in headless Chromium; results in window.__results.
 import { MapView } from "../web/map.js";
-import { galaxyIndex, insideHex, hexPoints } from "../web/mapstyle.js";
+import { galaxyIndex, insideHex, hexPoints, takeSectorExtras } from "../web/mapstyle.js";
 import { LIMITS } from "../web/camera.js";
 import { createTranslator } from "../web/map-strings.js";
 
@@ -135,6 +135,187 @@ async function run() {
     frame(m);
     check((m.lastLabels || []).some((l) => l.gate), "M8: gate label kept next to the player's label");
     m.destroy(); b.remove();
+  }
+
+  // ---------------- task F: gate connections from scan data alone; local highways
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    S.gates = [];                                       // the slow gate list has not arrived yet
+    S.scans.s1.objs = S.scans.s1.objs.map((o) => o.id === "g1" ? { ...o, ds: "s3", a: true } : o);
+    S.scans.s3 = { objs: [{ id: "g3", c: "gate", x: -60000, z: 20000, ds: "s1" }, { id: "g4", c: "gate", x: 40000, z: 0, du: true, a: false }] };
+    Object.assign(S, galaxyIndex(S.liveGalaxy, S.gates, S.scans, []));
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    m.setMode("galaxy"); m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.gview, { cx: 7e6, cz: 4e6, scale: 2.5e-5 });
+    frame(m);
+    check(m.lastGateLinks === 1, `F: the gate connection is drawn from the sector scans alone (${m.lastGateLinks} link, no gate list)`);
+    const p1 = m.gateGalaxyPos("s1", { x: 50000, z: 0 }), gs1 = m.geo().sectors.get("s1");
+    check(insideHex(p1[0], p1[1], gs1.x, gs1.z, gs1.r) && Math.hypot(p1[0] - gs1.x, p1[1] - gs1.z) > 1000, "F: the connection starts at the gate's own position inside the sector hexagon");
+    m.setMode("sector"); m.viewSector = null;
+    Object.assign(m.view, { cx: 0, cz: 0, scale: 0.002 }); frame(m);
+    check(m.lastHighways === 0, "F: no local highways drawn in a sector without them");
+    const lane = []; for (let i = 0; i <= 20; i++) { const t = i / 20; lane.push(-100 + 200 * t, 40 * Math.sin(t * Math.PI)); }
+    const back = []; for (let i = lane.length - 2; i >= 0; i -= 2) back.push(lane[i], lane[i + 1]);
+    S.scans.s1 = takeSectorExtras(S, { ...S.scans.s1, sid: "s1", objs: S.scans.s1.objs.concat([{ id: "hw:s1:1", c: "x4c_highway", pts: lane }, { id: "hw:s1:2", c: "x4c_highway", pts: back }]) });
+    frame(m);
+    check(m.lastHighways === 2 && !S.scans.s1.objs.some((o) => o.c === "x4c_highway"), `F: both lanes of a local highway drawn (${m.lastHighways}), taken out of the object list`);
+    m.chips.highways.click(); frame(m);
+    check(m.lastHighways === 0 && JSON.parse(localStorage.getItem("x4c.map")).highways === false, "F: the 'Local highways' layer toggle hides them and persists");
+    m.chips.highways.click();
+    m.destroy(); b.remove();
+  }
+
+  // ---------------- task E: following never zooms in by itself (the user's zoom sticks)
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    const b = box(1000, 650);
+    const m = new MapView(b, { S, bus });
+    m.cfg.ret = 8;
+    for (let i = 0; i < 5; i++) frame(m);           // first settle (allowed)
+    m.auto(); for (let i = 0; i < 5; i++) frame(m);
+    m.zoom(0.8);                                    // the user zooms out a little (follow stays on, no hand-over)
+    for (let i = 0; i < 5; i++) frame(m);
+    const userScale = m.view.scale;
+    m.lastUserZoom = performance.now() - 2000;      // the user's last wheel is long ago
+    let maxScale = 0, sp = 0;
+    for (let i = 0; i < 600; i++) {                 // 60 s of snapshots at 10 Hz, speed up and down
+      sp = 200 + 2500 * Math.abs(Math.sin(i / 60));
+      S.player.object.x += sp / 10; S.player.object.z += sp / 20;
+      if (i % 10 === 0) { S.scans.s1.objs.find((o) => o.id === "sh2").x = S.player.object.x + 3000; bus.emit("scan", "s1"); }
+      bus.emit("player", S.player); frame(m);
+      maxScale = Math.max(maxScale, m.view.scale);
+    }
+    const p = S.player.object;
+    check(m.cam === "follow" && maxScale <= userScale * 1.0001 && Math.hypot(m.view.cx - p.x, m.view.cz - p.z) < 5000,
+          `E: follow on, after the user zooms out 60 s of snapshots (speed up/down) never zoom in (max ${maxScale.toExponential(3)} <= ${userScale.toExponential(3)}), centre tracks the ship [${m.cam} ${Math.round(Math.hypot(m.view.cx - p.x, m.view.cz - p.z))} m ${m.mode}]`);
+    m.toManual(); m.view.cx += 80000; m.manualUntil = performance.now() - 1;    // timed return to the ship
+    for (let i = 0; i < 40; i++) frame(m);
+    check(m.cam === "follow" && Math.abs(m.view.scale - userScale) / userScale < 1e-6 && Math.hypot(m.view.cx - p.x, m.view.cz - p.z) < 5000,
+          `E: the timed return to the ship recentres without changing the zoom [${m.cam} ${m.view.scale.toExponential(3)} vs ${userScale.toExponential(3)} ${Math.round(Math.hypot(m.view.cx - p.x, m.view.cz - p.z))} m]`);
+    const prev = S.player;
+    S.prevPlayer = prev; S.player = { ...prev, sector: { id: "s3", name: "Beta" } };
+    bus.emit("sectorchange", { from: prev.sector, to: S.player.sector }); bus.emit("player", S.player);
+    for (let i = 0; i < 40; i++) frame(m);
+    check(Math.abs(m.view.scale - userScale) / userScale < 1e-6, "E: a sector change keeps the zoom");
+    m.fit(); for (let i = 0; i < 60; i++) frame(m);
+    check(m.view.scale !== userScale && m.cam === "fit", `E: an explicit fit may still change the zoom [${m.cam} ${m.view.scale.toExponential(3)} vs ${userScale.toExponential(3)}]`);
+    m.destroy(); b.remove();
+  }
+
+  // ---------------- v1.2: names modes (never / when zoomed in / always) at min, mid and max zoom
+  {
+    try { localStorage.clear(); localStorage.setItem("x4c.map", JSON.stringify({ autozoom: true, labels: "auto" })); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    const grid = [];
+    for (let i = -4; i <= 4; i++) for (let j = -4; j <= 4; j++) grid.push({ id: "n" + i + "_" + j, c: "ship_s", n: "Ship " + i + "/" + j, o: "argon", x: i * 3000, z: j * 3000 });
+    S.scans.s1.objs = S.scans.s1.objs.filter((o) => o.c === "gate").concat(grid, [{ id: "stx", c: "station", n: "Wharf", o: "argon", x: 1500, z: 1500 }]);
+    S.player.object.x = 200000; S.player.object.z = 200000;
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    check(!("autozoom" in JSON.parse(localStorage.getItem("x4c.map") || "{}")), "stale 'autozoom' key removed from the stored map settings");
+    m.toManual(); m.manualUntil = Infinity;
+    const ordinary = () => (m.lastLabels || []).filter((l) => !l.always);
+    const onscreen = () => (m.hit || []).filter((h) => !/^g/.test(h.o.id) && h.o.id !== S.player.object.id && h.x >= 0 && h.y >= 0 && h.x <= m.w && h.y <= m.h).length;
+    const overlaps = () => {
+      const L = (m.lastLabels || []).map((l) => [l.box, l.id, l.always]), bad = [];
+      for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+        const a = L[i][0], c = L[j][0];
+        if (a[0] < c[2] && a[2] > c[0] && a[1] < c[3] && a[3] > c[1]) bad.push("label/label");
+      }
+      for (const [a, id, always] of L) for (const h of m.hit || []) {
+        if (h.o.id === id || always) continue;           // always-on names may cover icons (never other names)
+        const c = [h.x - h.r + 2, h.y - h.r + 2, h.x + h.r - 2, h.y + h.r - 2];
+        if (a[0] < c[2] && a[2] > c[0] && a[1] < c[3] && a[3] > c[1]) { bad.push("label/icon"); break; }
+      }
+      return bad;
+    };
+    const res = {};
+    for (const mode of ["off", "auto", "all"]) {
+      m.cfg.labels = mode;
+      for (const [zn, sc] of [["min", LIMITS.sector.min], ["mid", 0.0025], ["max", 0.05]]) {
+        Object.assign(m.view, { cx: 0, cz: 0, scale: sc }); frame(m);
+        res[mode + zn] = { n: ordinary().length, on: onscreen(), bad: mode === "auto" ? overlaps() : [] };
+      }
+    }
+    check(["min", "mid", "max"].every((z) => res["off" + z].n === 0), `names 'never': no ordinary names at min/mid/max (${["min", "mid", "max"].map((z) => res["off" + z].n)})`);
+    check(res.automax.n >= res.automax.on * 0.8 && res.automax.n > 5, `names 'when zoomed in': close up (icons far apart) nearly every object is named (${res.automax.n}/${res.automax.on})`);
+    check(res.automin.n <= 2 && res.automid.n < res.automid.on, `names 'when zoomed in': when the icons crowd together the names thin out (min ${res.automin.n}/${res.automin.on}, mid ${res.automid.n}/${res.automid.on})`);
+    check(["min", "mid", "max"].every((z) => !res["auto" + z].bad.length), `names 'when zoomed in': names never overlap each other or other icons (${["min", "mid", "max"].map((z) => res["auto" + z].bad.length)})`);
+    check(["min", "mid", "max"].every((z) => res["all" + z].n === res["all" + z].on && res["all" + z].n >= res["auto" + z].n),
+          `names 'always': every object on screen named at min/mid/max (${["min", "mid", "max"].map((z) => res["all" + z].n + "/" + res["all" + z].on)})`);
+    // station ranks before ships: at the crowded mid zoom the station near the centre keeps its name
+    S.scans.s1.objs.push({ id: "stz", c: "station", n: "Wharf Two", o: "argon", x: 300000, z: 0 }, { id: "shz", c: "ship_s", n: "Zeta", o: "argon", x: 300250, z: 0 });
+    m.cfg.labels = "auto"; Object.assign(m.view, { cx: 300250, cz: 0, scale: 0.05 }); frame(m);
+    check((m.lastLabels || []).some((l) => l.text === "Wharf Two"), `names 'when zoomed in': a station ranks before a ship nearer the centre (${(m.lastLabels || []).map((l) => l.text).join(", ")})`);
+    m.destroy(); b.remove();
+  }
+
+  // ---------------- v1.2: always-on labels never overlap each other or the route label
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    const gates = [];
+    for (let k = 0; k < 8; k++) gates.push({ id: "gx" + k, c: "gate", x: 50000 + (k % 3) * 300, z: (k - 4) * 250, ds: k % 2 ? "s3" : null, du: !(k % 2) });
+    S.scans.s1.objs = S.scans.s1.objs.concat(gates, [{ id: "abx", c: "ship_m", o: "ownerless", n: "Abandoned Long Name Ship", x: 50400, z: 300 }, { id: "abx2", c: "ship_s", o: "ownerless", n: "Second", x: 50480, z: 300 }]);
+    S.player.object.x = 49000; S.player.object.z = 0;
+    S.player.guidance = { s: "s1", x: 50100, z: 100, n: "Plot course target" };
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    m.toManual(); m.manualUntil = Infinity;
+    const bad = [];
+    for (const sc of [0.0005, 0.002, 0.01]) {
+      Object.assign(m.view, { cx: 50000, cz: 0, scale: sc }); frame(m);
+      const L = (m.lastLabels || []).filter((l) => l.always).map((l) => l.box);
+      const R = m._lineBoxes || [];
+      for (let i = 0; i < L.length; i++) {
+        for (let j = i + 1; j < L.length; j++) { const a = L[i], c = L[j]; if (a[0] < c[2] - 0.5 && a[2] > c[0] + 0.5 && a[1] < c[3] - 0.5 && a[3] > c[1] + 0.5) bad.push(sc + " label/label"); }
+        for (const c of R) { const a = L[i]; if (a[0] < c[2] - 0.5 && a[2] > c[0] + 0.5 && a[1] < c[3] - 0.5 && a[3] > c[1] + 0.5) bad.push(sc + " label/route"); }
+      }
+      if (L.length < 10) bad.push(sc + " only " + L.length + " always-on labels");
+      const B = (m.lastOwnerless || []).map((q) => q.badge).filter((q) => q && q[2] - q[0] > 2);
+      for (let i = 0; i < B.length; i++) for (let j = i + 1; j < B.length; j++) { const a = B[i], c = B[j]; if (a[0] < c[2] && a[2] > c[0] && a[1] < c[3] && a[3] > c[1]) bad.push(sc + " badge/badge"); }
+    }
+    check(!bad.length, `10 clustered always-on labels + 2 abandoned-ship badges + route label: none overlaps, all shown (abbreviated / leader line where needed)${bad.length ? " - " + bad.slice(0, 4).join("; ") : ""}`);
+    m.destroy(); b.remove();
+  }
+
+  // ---------------- v1.2: resource areas + true sector size from the bridge (pseudo objects in the scan)
+  {
+    try { localStorage.clear(); } catch (e) { /* */ }
+    const S = makeS(), bus = makeBus();
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.view, { cx: 0, cz: 0, scale: 0.002 });
+    frame(m);
+    check(m.lastResources === 0 && m.lastSectorHex.source === "approx", "old bridge: no resource areas, border falls back to the approximation");
+    const pts = []; for (let i = -3; i <= 3; i++) for (let j = -3; j <= 3; j++) pts.push(40 + i * 10, 20 + j * 8.66, 50 + i);
+    const scan = { ...S.scans.s1, sid: "s1", objs: S.scans.s1.objs.concat([
+      { id: "si:s1", c: "x4c_sectorinfo", core: 300000, cx: 20000, cz: 0, contested: true },
+      { id: "res:s1:1", c: "x4c_resarea", w: "ore", cell: 10000, gen: 1, pts },
+      { id: "res:s1:2", c: "x4c_resarea", w: "rawscrap", cell: 10000, gen: 1, pts: [-80, -40, 30] }]) };
+    S.scans.s1 = takeSectorExtras(S, scan);
+    check(!S.scans.s1.objs.some((o) => /^x4c_/.test(o.c)) && S.resources.s1.areas.length === 2 && S.sectorInfo.s1.core === 300000,
+          "bridge extras are taken out of the object list (resources + sector info stored)");
+    bus.emit("scan", "s1");
+    for (let i = 0; i < 90; i++) frame(m);
+    const hx = m.lastSectorHex;
+    check(hx.source === "core" && Math.abs(hx.apothem - 150000) < 2 && Math.abs(hx.cx - 20000) < 2 && hx.contested,
+          `true sector size: hexagon apothem = coresize/2 around the core centre (${Math.round(hx.apothem / 1000)} km at ${Math.round(hx.cx / 1000)} km), contested shown`);
+    check(m.lastResources === 50, `resource areas drawn (${m.lastResources} cells)`);
+    const [sx, sy] = m.toScreen(40000, 20000), cr = m.canvas.getBoundingClientRect();
+    m.canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: cr.left + sx, clientY: cr.top + sy, pointerId: 9, bubbles: true }));
+    check(!m.tip.hidden && /Ore 50/.test(m.tip.textContent), `hovering a resource area names the resource and yield ("${m.tip.textContent}")`);
+    m.chips.resources.click(); frame(m);
+    check(m.lastResources === 0 && JSON.parse(localStorage.getItem("x4c.map")).resources === false, "the 'Resource areas' layer toggle hides them and persists");
+    m.chips.resources.click();
+    m.cfg.legend = true; m.renderLegend();
+    check(/Minerals/.test(m.legendBox.innerText) && /Scrap/.test(m.legendBox.innerText), "legend lists the resource colours");
+    m.destroy(); b.remove();
+    try { localStorage.clear(); } catch (e) { /* */ }
   }
 
   // ---------------- sector border hexagon (sector view)

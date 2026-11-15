@@ -155,15 +155,45 @@ class Browser:
             info = await r.json()
         ws = await self.http.ws_connect(info["webSocketDebuggerUrl"], max_msg_size=0)
         p = Page(ws, self.http)
+        p.tid = info.get("id")
         await p.call("Page.enable")
         await p.call("Runtime.enable")
         await p.call("Emulation.setDeviceMetricsOverride", {"width": width or self.w, "height": height or self.h,
                                                            "deviceScaleFactor": 1, "mobile": False})
         return p
 
+    async def close_page(self, p: Page) -> None:
+        """close a tab opened with page() (long suites: dozens of live tabs exhaust the headless browser)"""
+        try:
+            await p.ws.close()
+            if getattr(p, "tid", None):
+                async with self.http.get(f"http://127.0.0.1:{self.port}/json/close/{p.tid}") as r:
+                    await r.read()
+        except (aiohttp.ClientError, RuntimeError):
+            pass
+
+    async def close_other_pages(self, keep: Page) -> None:
+        """close every tab except `keep` (pages from page() other than it become unusable)"""
+        try:
+            async with self.http.get(f"http://127.0.0.1:{self.port}/json/list") as r:
+                tabs = await r.json()
+            for t in tabs:
+                if t.get("type") == "page" and t.get("id") != getattr(keep, "tid", None):
+                    async with self.http.get(f"http://127.0.0.1:{self.port}/json/close/{t['id']}") as r:
+                        await r.read()
+        except aiohttp.ClientError:
+            pass
+
     async def __aexit__(self, *exc):
         if self.http:
             await self.http.close()
         if self.proc and self.proc.poll() is None:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True)
+            try:
+                self.proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                pass
+            # the child processes hold the profile a moment longer; a browser started on the same profile
+            # meanwhile would hand over to the dying one (single instance per profile) and lose its socket
+            time.sleep(2.0)
         return False

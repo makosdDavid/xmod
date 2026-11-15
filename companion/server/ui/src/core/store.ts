@@ -3,7 +3,7 @@
 // (web/map.js) reads it directly. Every browser window (main or pop-out) runs its own copy of this
 // module: its own websocket, its own init snapshot (the server sends the whole state on connect) and
 // its own icon index.
-import { galaxyIndex, setIconIndex, staticClusterIndex } from "@web/mapstyle.js";
+import { galaxyIndex, setIconIndex, staticClusterIndex, takeSectorExtras } from "@web/mapstyle.js";
 import { toast as sonner } from "sonner";
 import { t } from "@/i18n";
 
@@ -32,7 +32,7 @@ export interface State {
   liveGalaxy: Any[] | null; hwlinks: [string, string][]; staticMap: Any | null;
   sectors: Map<string, Any>; clusters: Map<string, Any>; sectorByMacro: Map<string, string>;
   links: { a: string; b: string; kind: string }[]; stubs: Any[]; gates: Any[]; gatesBySector: Map<string, Any[]>;
-  scans: Record<string, Any>; property: Map<string, Any>; propertyMeta: Any; details: Record<string, Any | null | undefined>;
+  scans: Record<string, Any>; resources?: Record<string, Any>; sectorInfo?: Record<string, Any>; property: Map<string, Any>; propertyMeta: Any; details: Record<string, Any | null | undefined>;
   log: Any[]; ticker: Any[]; messages: Any | null; missions: Any[]; offers: Any[]; factions: Record<string, Any>; factionList: Any[];
   economy: Any | null; stats: Any | null; player: Any | null; playerAt: number; prevPlayer: Any | null; speedEst: number | null;
   yaw: { a: number; b: number; c: number }; selected: Selection | null; lastAck: Any | null; icons: number; iconsLoaded: boolean;
@@ -174,7 +174,7 @@ function apply(m: Any) {
       S.hello = m.hello;
       S.liveGalaxy = m.galaxy;
       S.gates = m.gates || [];
-      S.scans = m.sectors || {};
+      S.scans = Object.fromEntries(Object.entries(m.sectors || {}).map(([k, v]) => [k, takeSectorExtras(S, v)]));
       S.property = new Map((m.property || []).map((e: Any) => [String(e.id), e]));
       S.propertyMeta = m.property_meta || {};
       S.log = [];
@@ -203,7 +203,7 @@ function apply(m: Any) {
     case "staticmap": S.staticMap = { clusters: m.clusters || [] }; rebuildLinks(); bus.emit("staticmap"); bus.emit("galaxy"); break;
     case "sector": {
       const before = S.links.length;
-      S.scans[m.sid] = m;
+      S.scans[m.sid] = takeSectorExtras(S, m);       // v1.2 bridge: resource areas + sector info ride along
       if ((m.objs || []).some((o: Any) => o.ds)) { rebuildLinks(); if (S.links.length !== before) bus.emit("galaxy"); }
       bus.emit("scan", m.sid);
       break;

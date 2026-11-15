@@ -39,6 +39,7 @@ declare module "@web/mapstyle.js" {
   export function hasIconExport(): boolean;
   export function staticClusterIndex(json: unknown): any;
   export function isOwnerlessShip(o: any): boolean;
+  export function takeSectorExtras(S: any, scan: any): any;
   export const OWNERLESS_COLOR: RGB;
   export function galaxyIndex(liveGalaxy: any[], gates?: any[], scans?: Record<string, any>, hwlinks?: any[], staticByMacro?: any): {
     sectors: Map<string, any>; clusters: Map<string, any>; sectorByMacro: Map<string, string>;

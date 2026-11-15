@@ -17,7 +17,7 @@ import { loadSettings, saveSettings, factionColor } from "./util.js";
 import { clampScale, wheelFactor, applyBias, zoomAt, fitScale, pinchFactor } from "./camera.js";
 import { iconEl } from "./icons.js";
 import { objColor, holo, rgb, iconFor, iconSize, isShip, drawIcon, hexCellsInRange, radarCell, route,
-         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, isOwnerlessShip, OWNERLESS_COLOR, sectorHexApothem, hexRadiusOfApothem, hexPoints, CLUSTER_R } from "./mapstyle.js";
+         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, isOwnerlessShip, OWNERLESS_COLOR, sectorHexApothem, hexRadiusOfApothem, hexPoints, RESOURCE_COLOR, resourceCategory, CLUSTER_R } from "./mapstyle.js";
 import { withFallback } from "./map-strings.js";
 
 const HEX = CLUSTER_R;           // cluster grid edge length (vanilla menu_mapeditor.lua:163)
@@ -26,10 +26,11 @@ const GRID_STEPS = [500, 1000, 2000, 5000, 10000, 20000, 25000, 50000, 100000, 2
 const FONT = '"Segoe UI", "Inter", system-ui, sans-serif';
 // the v1.1 defaults, unchanged (stored settings are not migrated)
 const DEFAULTS = { labels: "auto", npc: true, grid: true, mini: true, radar: true, lines: true, hull: true,
-                   factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false, ownerless: true };
+                   factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false, ownerless: true, resources: true, highways: true };
 
 export function migrateMapSettings(raw) {
   const cfg = Object.assign({}, DEFAULTS, raw || {});
+  delete cfg.autozoom;            // stale key from an older build; no code ever read it
   if (typeof cfg.labels === "boolean") cfg.labels = cfg.labels ? "auto" : "off";
   return cfg;
 }
@@ -225,7 +226,7 @@ export class MapView {
     } });
     this.layersBtn = this.mk("button", { class: "chip layers-btn", onclick: () => this.togglePop("layers") });
     this.layers = this.mk("div", { class: "layers", hidden: true },
-      chip("radar"), chip("lines"), chip("npc"), chip("ownerless"), chip("hull"), chip("factioncol"), chip("rotate"), chip("grid"), chip("mini"),
+      chip("radar"), chip("resources"), chip("highways"), chip("lines"), chip("npc"), chip("ownerless"), chip("hull"), chip("factioncol"), chip("rotate"), chip("grid"), chip("mini"),
       this.lblBtn, chip("legend"));
     this.legendBox = this.mk("div", { class: "maplegend2", hidden: true });
     this.followBadge = this.mk("div", { class: "followbadge" });
@@ -571,6 +572,22 @@ export class MapView {
       ownerlessMark(g2, 15, 15, 11, 0, null, true);
       box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", { style: { color: rgb(OWNERLESS_COLOR) } }, T("map.legend.ownerless"))));
     }
+    for (const cat of ["mineral", "gas", "scrap"]) {
+      const cv = this.mk("canvas", { width: 20, height: 14 });
+      const g2 = cv.getContext("2d"), col = RESOURCE_COLOR[cat];
+      g2.fillStyle = rgb(col, 0.25); g2.fillRect(0, 0, 20, 14);
+      g2.fillStyle = rgb(col); g2.strokeStyle = rgb(col);
+      if (cat === "scrap") { for (let k = -14; k < 20; k += 5) { g2.beginPath(); g2.moveTo(k, 14); g2.lineTo(k + 14, 0); g2.stroke(); } }
+      else for (let x = 2; x < 20; x += 5) for (let y = 2; y < 14; y += 5) { g2.beginPath(); g2.arc(x, y, 1.1, 0, Math.PI * 2); g2.fill(); }
+      box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend.res_" + cat))));
+    }
+    {
+      const cv = this.mk("canvas", { width: 20, height: 14 });
+      const g2 = cv.getContext("2d"), col = holo(th, "highwaycolor");
+      g2.strokeStyle = rgb(col); g2.lineWidth = 1.4;
+      for (const y of [5, 9]) { g2.beginPath(); g2.moveTo(1, y); g2.quadraticCurveTo(10, y - 4, 19, y); g2.stroke(); }
+      box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend.highways"))));
+    }
     box.append(this.mk("span", { class: "lgi" }, this.mk("span", { class: "swatch radar" }), this.mk("span", {}, T("map.legend.radar"))));
     this.legendBox.replaceChildren(this.mk("div", { class: "lgtitle" }, T("map.legend.title") + (th && !th.sim ? T("map.legend.gameColors") : T("map.legend.approx"))), box);
   }
@@ -735,6 +752,7 @@ export class MapView {
     if (ok(c.view)) this.view = { cx: c.view.cx, cz: c.view.cz, scale: clampScale(c.view.scale, "sector") };
     if (ok(c.gview)) this.gview = { cx: c.gview.cx, cz: c.gview.cz, scale: clampScale(c.gview.scale, "galaxy") };
     this.cam = "manual"; this.prevCam = "follow"; this.manualUntil = Infinity;
+    this.autoZoom = { sector: false, galaxy: false };
     if (c.viewSector) { this.viewSector = String(c.viewSector); this.watch(this.viewSector); }
     return true;
   }
@@ -745,11 +763,14 @@ export class MapView {
     this.dirty = true;
     this.saveCam();
   }
-  fit() { this.cam = "fit"; this.zoomBias = 1; this.manualUntil = 0; this.lastInteract = performance.now(); this.dirty = true; this.saveCam(); }
+  fit() { this.autoZoom = this.autoZoom || {}; this.autoZoom[this.mode] = true; this.lastUserZoom = 0; this.cam = "fit"; this.zoomBias = 1; this.manualUntil = 0; this.lastInteract = performance.now(); this.dirty = true; this.saveCam(); }
   // f > 1 zooms in. Around (sx, sy) in manual mode; auto modes keep their target and change the bias.
   zoom(f, sx, sy) {
     if (!Number.isFinite(f) || f <= 0) return;
     const v = this.v();
+    this.lastUserZoom = performance.now();          // the user's zoom: it sticks (see updateCamera)
+    this.autoZoom = this.autoZoom || { sector: true, galaxy: true };
+    this.autoZoom[this.mode] = false;
     if (this.cam === "manual") {
       const z = zoomAt(v, f, sx ?? this.w / 2, sy ?? this.h / 2, this.w, this.h, this.mode);
       Object.assign(v, z);
@@ -777,44 +798,70 @@ export class MapView {
     if (!objs.some((o) => o.c === "gate")) objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z })));
     return objs;
   }
-  sectorHexR(sid) {
+  sectorHexR(sid) { return this.sectorHexAt(sid).R; }
+  sectorHexAt(sid) {
     const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
-    const st = (this.secHex && this.secHex.get(String(sid))) || this.sectorHexTarget(String(sid), this.sectorObjs(sid), String(sid) === ps);
-    return hexRadiusOfApothem(st.shown || st.target);
+    const st = this.sectorHexTarget(String(sid), this.sectorObjs(sid), String(sid) === ps);
+    return { R: hexRadiusOfApothem(st.shown || st.target), cx: st.scx || 0, cz: st.scz || 0 };
   }
   zoomHandover(f, sx, sy) {
     if (!this.w || !this.h) return;
     const m = Math.min(this.w, this.h);
     sx = sx ?? this.w / 2; sy = sy ?? this.h / 2;
+    const hexNorm = (x, z) => Math.max(Math.abs(z), (Math.sqrt(3) * Math.abs(x) + Math.abs(z)) / 2);
+    this.autoZoom = this.autoZoom || {};
     if (this.mode === "sector" && f < 1) {
       const sid = this.currentSid();
       if (!sid) return;
-      const R = this.sectorHexR(sid);
-      if (2 * R * this.view.scale >= 0.4 * m) return;
+      const H = this.sectorHexAt(sid);
+      if (2 * H.R * this.view.scale >= 0.4 * m) return;
       const gs = this.sectorGeo(sid);
       if (!gs || gs.unplaced) return;
+      // the sector's effective size for the mapping: its hexagon, grown so that the view centre and the
+      // pointer still lie inside it - they then land inside the sector's galaxy hexagon and zooming back
+      // in at the same place returns to this sector (not to a neighbour or an empty corner)
+      const [px, pz] = this.toWorld(sx, sy);
+      let R = H.R;
+      for (const [x, z] of [[this.view.cx, this.view.cz], [px, pz]]) R = Math.max(R, hexNorm(x - H.cx, z - H.cz) * 2 / Math.sqrt(3) * 1.08);
       const k = gs.r / R;                         // galaxy metres per sector metre
-      this.gview = { cx: gs.x + this.view.cx * k, cz: gs.z + this.view.cz * k, scale: clampScale(this.view.scale / k, "galaxy") };
+      this.gview = { cx: gs.x + (this.view.cx - H.cx) * k, cz: gs.z + (this.view.cz - H.cz) * k, scale: clampScale(this.view.scale / k, "galaxy") };
+      this.handoverFrom = { sid: String(sid), R };
+      this.autoZoom.galaxy = false;
       this.setMode("galaxy");
       this.toManual();
       this.handoverAt = performance.now();
     } else if (this.mode === "galaxy" && f > 1) {
-      const s = this.pickSector(sx, sy) || this.pickSector(this.w / 2, this.h / 2);
-      if (!s) return;
-      const gs = this.geo().sectors.get(String(s.id));
-      if (!gs || 2 * gs.r * this.gview.scale <= 0.9 * m) return;
-      const R = this.sectorHexR(s.id);
+      // which sector: the one under the pointer, else under the centre, else the one we came from if it
+      // is still on screen, else the nearest one - so zooming in always ends in a sector, never in a gap
+      const geo = this.geo(), v = this.gview;
+      const [pwx, pwz] = this.toWorld(sx, sy), [cwx, cwz] = this.toWorld(this.w / 2, this.h / 2);
+      const known = [...geo.sectors.entries()].filter(([id]) => this.S.sectors && this.S.sectors.get(id));
+      const inside = (wx, wz) => known.find(([, g]) => insideHex(wx, wz, g.x, g.z, g.r));
+      const onScreen = ([, g]) => { const [x, y] = this.toScreen(g.x, g.z), r = g.r * v.scale; return x > -r && y > -r && x < this.w + r && y < this.h + r; };
+      let pick = inside(pwx, pwz) || inside(cwx, cwz);
+      if (!pick && this.handoverFrom) { const e = known.find(([id]) => id === this.handoverFrom.sid); if (e && onScreen(e)) pick = e; }
+      if (!pick) {
+        let bd = Infinity;
+        for (const e of known) { const d = Math.hypot(e[1].x - pwx, e[1].z - pwz) - e[1].r; if (d < bd) { bd = d; pick = e; } }
+      }
+      if (!pick) return;
+      const [sid, gs] = pick;
+      if (2 * gs.r * v.scale <= 0.9 * m) return;
+      const H = this.sectorHexAt(sid);
+      const R = this.handoverFrom && this.handoverFrom.sid === sid ? this.handoverFrom.R : H.R;
       const k = gs.r / R;
-      this.view = { cx: (this.gview.cx - gs.x) / k, cz: (this.gview.cz - gs.z) / k, scale: clampScale(this.gview.scale * k, "sector") };
+      this.view = { cx: H.cx + (v.cx - gs.x) / k, cz: H.cz + (v.cz - gs.z) / k, scale: clampScale(v.scale * k, "sector") };
       const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
-      this.viewSector = String(s.id) === ps ? null : String(s.id);
+      this.viewSector = sid === ps ? null : sid;
       this.watch(this.viewSector);
+      this.autoZoom.sector = false;
       this.setMode("sector");
       this.toManual();
       this.handoverAt = performance.now();
       this.emit("mapsector", this.currentSid());
     }
   }
+
   setMode(m) {
     m = m === "galaxy" ? "galaxy" : "sector";
     this.mode = m;
@@ -837,6 +884,8 @@ export class MapView {
     this.watch(this.viewSector);
     this.setMode("sector");
     this.cam = this.viewSector ? "fit" : "follow";
+    this.autoZoom = this.autoZoom || {};
+    if (this.viewSector) { this.autoZoom.sector = true; this.lastUserZoom = 0; }   // opening a sector = an overview
     this.saveCam();
     this.fitPending = true;
     this.lastInteract = performance.now();
@@ -945,7 +994,7 @@ export class MapView {
     let objs = sc ? (sc.objs || sc.items || []) : [];
     if (!objs.some((o) => o.c === "gate")) {
       const gs = (this.S.gatesBySector && this.S.gatesBySector.get(String(sid))) || [];
-      objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z, ds: g.ds, du: g.du, n: g.hw ? this.t("map.highway") : this.t("map.gate") })));
+      objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z, ds: g.ds, du: g.du, a: g.a, n: g.hw ? this.t("map.highway") : this.t("map.gate") })));
     }
     return { sid, sc, objs };
   }
@@ -982,7 +1031,20 @@ export class MapView {
     const v = this.v();
     const k = this.fitPending ? 1 : 0.16;
     this.fitPending = false;
+    // Zoom rule (v1.2, task E): the automatic camera moves the centre, never the zoom - except
+    //  * the first settle after the map opened and an explicit "fit" / overview / opening a sector,
+    //    which may zoom in or out until reached (autoZoom flag);
+    //  * "fit" afterwards keeps everything in view by zooming OUT only.
+    // Follow, focus, the timed return, a sector change and a hand-over never change the zoom; the
+    // user's wheel / + / - / pinch / hotkeys always win (no automatic change within 1.5 s of them).
+    this.autoZoom = this.autoZoom || { sector: true, galaxy: true };
+    const userRecent = !!this.lastUserZoom && now - this.lastUserZoom < 1500;
+    let tscale = v.scale;
+    if (this.autoZoom[this.mode] && !userRecent) tscale = target.scale;
+    else if (this.cam === "fit" && !userRecent) tscale = Math.min(target.scale, v.scale);
+    target.scale = tscale;
     const ds = Math.log(target.scale) - Math.log(v.scale);
+    if (this.autoZoom[this.mode] && Math.abs(ds) < 0.003) this.autoZoom[this.mode] = false;
     const moved = Math.abs(target.cx - v.cx) * v.scale > 0.5 || Math.abs(target.cz - v.cz) * v.scale > 0.5 || Math.abs(ds) > 0.003;
     v.cx += (target.cx - v.cx) * k;
     v.cz += (target.cz - v.cz) * k;
@@ -1034,7 +1096,7 @@ export class MapView {
       // "fit whole sector" frames the sector's hexagon border
       if (sid) {
         const st = this.sectorHexTarget(String(sid), objs, !this.viewSector);
-        for (const [x, z] of hexPoints(0, 0, hexRadiusOfApothem(st.target))) pts.push([x, z]);
+        for (const [x, z] of hexPoints(st.cx || 0, st.cz || 0, hexRadiusOfApothem(st.target))) pts.push([x, z]);
       }
       if (!this.viewSector && has(p)) pts.push([p.x, p.z]);
     } else if (this.cam === "focus") {
@@ -1177,6 +1239,10 @@ export class MapView {
     const scale = this.cfg.iconscale || 1;
 
     // lines below the icons
+    this._lineBoxes = [];
+    this.lastResources = 0; this.lastHighways = 0;
+    if (this.cfg.resources !== false) this.drawResources(g, sid);
+    if (this.cfg.highways !== false) this.drawHighways(g, sid);
     if (this.cfg.lines) this.drawLines(g, sid, objs, inPlayer);
 
     // draw order (M1): misc < NPC ships < own ships < gates < stations; the player marker last
@@ -1199,12 +1265,13 @@ export class MapView {
       if (x < -40 || y < -40 || x > this.w + 40 || y > this.h + 40) continue;
       if (ship) { if (o.pl) nOwn++; else nNpc++; if (o.h) nHostile++; }
       if (ownerless) nOwnerless++;
-      const col = this.colorOf(o);
+      // inactive gates greyed like the game map (v1.2 bridge sends them, a=false)
+      const col = (o.c === "gate" || o.c === "highwayentrygate") && o.a === false ? { r: 128, g: 136, b: 148 } : this.colorOf(o);
       const size = iconSize(o, scale);
       const rot = this.cfg.rotate && ship && typeof o.yaw === "number" ? this.heading(o.yaw) : 0;
       drawIcon(g, iconFor(o), x, y, size, col, rot);
       if (mark) {
-        const bb = ownerlessMark(g, x, y, size, now, T("map.ownerless.badge"), still);
+        const bb = ownerlessMark(g, x, y, size, now, T("map.ownerless.badge"), still, reserved);
         reserved.push(bb);
         this.lastOwnerless.push({ id: o.id, x, y, badge: bb });
       }
@@ -1218,59 +1285,22 @@ export class MapView {
         else { const ph = (now % 1000) / 1000; g.strokeStyle = `rgba(255,70,70,${1 - ph})`; g.lineWidth = 2; g.beginPath(); g.arc(x, y, size / 2 + 4 + ph * 18, 0, Math.PI * 2); g.stroke(); }
       }
       this.hit.push({ x, y, r: size / 2 + (mark ? 9 : 3), o });
-      const wantLabel = lblMode === "all" || important ||
-        (lblMode === "auto" && (nameZoom || (stationZoom && (o.c === "station" || o.c === "gate" || o.c === "highwayentrygate"))));
+      // name candidates (rule: see placeLabels)
       if (mark) {
-        // abandoned ship: its name always shown, placed like gate names (never dropped)
-        labels.push({ x, y: y + size / 2 + 16, iy: y, isz: size + 14, gate: true, ownerless: true, col: OWNERLESS_COLOR, pri: important ? 0 : 0.4,
+        labels.push({ o: o.id, x, y, isz: size + 14, always: true, ownerless: true, col: OWNERLESS_COLOR, pri: important ? 0 : 1,
                       text: o.n || this.className(o.c) || T("map.unknown") });
       } else if (o.c === "gate" || o.c === "highwayentrygate") {
         // M8: jump gate / accelerator / superhighway names (= destination sector) at every zoom level
         const dn = o.ds ? this.sectorName(o.ds) : null;
-        labels.push({ x, y: y + size / 2 + 12, iy: y, isz: size, gate: true, col, pri: important ? 0 : 0.5,
+        labels.push({ o: o.id, x, y, isz: size, always: true, gate: true, col, pri: important ? 0 : 1.1,
                       text: dn && dn !== T("map.unknown") && dn !== "?" ? dn : T("map.gate.unknownDest") });
-      } else if ((wantLabel && lblMode !== "off") || important) {
+      } else if (lblMode !== "off" || important) {
         const txt = o.n || this.className(o.c) || "";
-        if (txt) labels.push({ x, y: y + size / 2 + 12, text: txt, col, pri: important ? 0 : (o.pl ? 1 : o.c === "station" ? 2 : 3) });
+        if (txt) labels.push({ o: o.id, x, y, isz: size, col, text: txt, important,
+                               pri: important ? 0 : o.pl ? 2 : o.mt ? 3 : o.c === "station" ? 4 : ship ? 5 : 6 });
       }
     }
-    // labels: important first, no overlaps (like the game, names thin out instead of piling up);
-    // gate names are never dropped: they try below / above / right / left, then step downwards
-    labels.sort((a, b) => a.pri - b.pri);
-    const taken = [];
-    const hitsAny = (box) => taken.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]);
-    if (inPlayer && p && p.x !== null && p.x !== undefined) {      // the player's own label (drawn last) is reserved first
-      const [px, py] = this.toScreen(p.x, p.z);
-      g.font = `13px ${FONT}`;
-      const pw = g.measureText(T("map.you", { name: p.name || "" })).width;
-      taken.push([px - 18, py - 20, px + 24 + pw, py + 18]);
-    }
-    for (const b of reserved) taken.push(b);
-    g.font = `12px ${FONT}`;
-    this.lastLabels = [];
-    for (const L of labels) {
-      const w = g.measureText(L.text).width;
-      const boxAt = (lx, ly) => [lx - 3, ly - 12, lx + w + 3, ly + 4];
-      if (L.gate) {
-        const h2 = L.isz / 2;
-        const cands = [[L.x - w / 2, L.y], [L.x - w / 2, L.iy - h2 - 6], [L.x + h2 + 6, L.iy + 4], [L.x - h2 - 6 - w, L.iy + 4]];
-        let pos = cands.find(([lx, ly]) => !hitsAny(boxAt(lx, ly)));
-        for (let k = 1; !pos && k <= 6; k++) { const c = [L.x - w / 2, L.y + 16 * k]; if (!hitsAny(boxAt(...c))) pos = c; }
-        if (!pos) pos = cands[0];
-        const box = boxAt(pos[0], pos[1]);
-        taken.push(box);
-        g.fillStyle = "rgba(2,6,14,0.62)";
-        roundRect(g, box[0], box[1], box[2] - box[0], box[3] - box[1], 3); g.fill();
-        text(g, L.text, pos[0], pos[1], rgb(L.col), 12, true);
-        this.lastLabels.push({ text: L.text, x: pos[0], y: pos[1], gate: !L.ownerless, ownerless: !!L.ownerless });
-        continue;
-      }
-      const box = [L.x - w / 2 - 2, L.y - 11, L.x + w / 2 + 2, L.y + 3];
-      if (L.pri > 0 && hitsAny(box)) continue;
-      taken.push(box);
-      text(g, L.text, L.x - w / 2, L.y, rgb(L.col), 12, true);
-      this.lastLabels.push({ text: L.text, x: L.x - w / 2, y: L.y, gate: false });
-    }
+    this.placeLabels(g, labels, reserved, lblMode, inPlayer && p && p.x !== null && p.x !== undefined ? this.toScreen(p.x, p.z) : null);
     // player (always on top)
     if (inPlayer && p && p.x !== null && p.x !== undefined) {
       const [px, py] = this.toScreen(p.x, p.z);
@@ -1300,30 +1330,227 @@ export class MapView {
     this.drawInfo(sec, sc, nOwn, nNpc, nHostile, nOwnerless);
   }
 
-  // the sector's hexagon border (see mapstyle.sectorHexApothem: an approximation of the game's frame).
-  // It only grows (per sector), eases towards a larger size and holds still while the user drags.
+  // Resource areas (v1.2 bridge: S.resources[sid] = {cell, areas:[{w, pts:[x_km, z_km, amount, ...]}]}):
+  // hex cells in the game map's category colour (mineral orange, gas cyan, scrap grey) with the game's
+  // dotted fill (scrap: striped), under lines / ships / stations. Nothing without the new bridge.
+  resPattern(cat) {
+    this._resPat = this._resPat || {};
+    if (this._resPat[cat]) return this._resPat[cat];
+    const c = this.doc.createElement("canvas");
+    c.width = c.height = 7;
+    const x = c.getContext("2d"), col = RESOURCE_COLOR[cat];
+    x.fillStyle = rgb(col, 0.95); x.strokeStyle = rgb(col, 0.85); x.lineWidth = 1.2;
+    if (cat === "scrap") { x.beginPath(); x.moveTo(-1, 8); x.lineTo(8, -1); x.stroke(); }
+    else { x.beginPath(); x.arc(3.5, 3.5, 1.15, 0, Math.PI * 2); x.fill(); }
+    return (this._resPat[cat] = this.ctx2d.createPattern(c, "repeat"));
+  }
+  drawResources(g, sid) {
+    const R = this.S.resources && this.S.resources[String(sid)];
+    this.lastResources = 0;
+    if (!R || !R.areas || !R.areas.length) return;
+    const v = this.view, cell = R.cell || 10000;
+    const rpx = (cell / Math.sqrt(3)) * v.scale * 1.01;      // pointy-top cell circumradius in px
+    const paths = {};
+    let n = 0;
+    for (const a of R.areas) {
+      const cat = resourceCategory(a.w);
+      const path = paths[cat] || (paths[cat] = new Path2D());
+      const pts = a.pts || [];
+      for (let i = 0; i + 2 < pts.length; i += 3) {
+        const [x, y] = this.toScreen(pts[i] * 1000, pts[i + 1] * 1000);
+        if (x < -rpx || y < -rpx || x > this.w + rpx || y > this.h + rpx) continue;
+        n++;
+        if (rpx < 1.5) { path.rect(x - 1, y - 1, 2, 2); continue; }
+        for (let k = 0; k < 6; k++) {
+          const ang = Math.PI / 3 * k + Math.PI / 6;
+          const px = x + rpx * Math.cos(ang), py = y + rpx * Math.sin(ang);
+          if (k === 0) path.moveTo(px, py); else path.lineTo(px, py);
+        }
+        path.closePath();
+      }
+    }
+    for (const [cat, path] of Object.entries(paths)) {
+      g.fillStyle = rgb(RESOURCE_COLOR[cat], 0.14); g.fill(path);
+      if (rpx >= 3) { g.fillStyle = this.resPattern(cat); g.fill(path); }
+    }
+    this.lastResources = n;
+  }
+  // Local highways (v1.2 bridge: S.highways[sid] = [[x_km, z_km, ...] per lane], sampled from the game's
+  // own spline): thin blue curves like the game map, each lane nudged 1.5 px to its right so the two
+  // directions of a highway show as a double line; entry / exit marked with small rings.
+  drawHighways(g, sid) {
+    const lanes = this.S.highways && this.S.highways[String(sid)];
+    if (!lanes || !lanes.length) return;
+    const col = holo(this.S.theme, "highwaycolor");
+    g.save();
+    g.lineWidth = 1.6; g.strokeStyle = rgb(col, 0.9); g.lineJoin = "round";
+    let n = 0;
+    for (const pts of lanes) {
+      if (!pts || pts.length < 4) continue;
+      const sp = [];
+      for (let i = 0; i + 1 < pts.length; i += 2) sp.push(this.toScreen(pts[i] * 1000, pts[i + 1] * 1000));
+      g.beginPath();
+      for (let i = 0; i < sp.length; i++) {
+        const a = sp[Math.max(0, i - 1)], b = sp[Math.min(sp.length - 1, i + 1)];
+        const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1;
+        const x = sp[i][0] - dy / d * 1.5, y = sp[i][1] + dx / d * 1.5;
+        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+      }
+      g.stroke();
+      for (const [x, y] of [sp[0], sp[sp.length - 1]]) { g.beginPath(); g.arc(x, y, 3.2, 0, Math.PI * 2); g.stroke(); }
+      n++;
+    }
+    g.restore();
+    this.lastHighways = n;
+  }
+  // the resources under a world point (hover): [{w, a}] of the cells within one cell of it
+  resourcesAt(sid, wx, wz) {
+    const R = this.S.resources && this.S.resources[String(sid)];
+    if (!R || !R.areas) return [];
+    if (this._resIdx && this._resIdx.src === R) {} else {
+      const cell = R.cell || 10000, b = new Map();
+      for (const a of R.areas) for (let i = 0; i + 2 < (a.pts || []).length; i += 3) {
+        const x = a.pts[i] * 1000, z = a.pts[i + 1] * 1000, k = Math.floor(x / cell) + "," + Math.floor(z / cell);
+        let l = b.get(k); if (!l) b.set(k, (l = [])); l.push([x, z, a.w, a.pts[i + 2]]);
+      }
+      this._resIdx = { src: R, cell, b };
+    }
+    const { cell, b } = this._resIdx, out = new Map();
+    const bx = Math.floor(wx / cell), bz = Math.floor(wz / cell);
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const [x, z, w, a] of b.get((bx + i) + "," + (bz + j)) || []) {
+      if (Math.hypot(x - wx, z - wz) <= cell * 0.6) out.set(w, Math.max(out.get(w) || 0, a));
+    }
+    return [...out.entries()].map(([w, a]) => ({ w, a }));
+  }
+  // the gate in sector sid that leads to sector ds (scan first - it is the freshest - then the gate list)
+  gateOf(sid, ds) {
+    const sc = this.S.scans && this.S.scans[String(sid)];
+    const fromScan = ((sc && sc.objs) || []).find((o) => (o.c === "gate" || o.c === "highwayentrygate") && String(o.ds) === String(ds));
+    if (fromScan) return fromScan;
+    return ((this.S.gatesBySector && this.S.gatesBySector.get(String(sid))) || []).find((g) => !g.hw && String(g.ds) === String(ds)) || null;
+  }
+  // a gate's sector position mapped into its sector's galaxy hexagon (kept inside it)
+  gateGalaxyPos(sid, gate) {
+    const gs = this.geo().sectors.get(String(sid));
+    if (!gs) return [0, 0];
+    const H = this.sectorHexAt(String(sid)), k = gs.r / H.R;
+    let fx = ((+gate.x || 0) - H.cx) * k, fz = ((+gate.z || 0) - H.cz) * k;
+    for (let i = 0; i < 20 && !insideHex(gs.x + fx, gs.z + fz, gs.x, gs.z, gs.r * 0.94); i++) { fx *= 0.9; fz *= 0.9; }
+    return [gs.x + fx, gs.z + fz];
+  }
+  wareName(w) { const k = "map.ware." + w; const s = this.t(k); return s === k ? w : s; }
+
+  // Names in the sector view. Rule (v1.2):
+  //  * always (every zoom, every "Names" mode): jump gates / accelerators / superhighways (destination
+  //    sector), abandoned (ownerless) ships, the selected / targeted / hovered object;
+  //  * "when zoomed in" (auto): density based - every other object on screen is a candidate, in this
+  //    order: own property, mission targets, stations, ships, other objects, nearest to the screen centre
+  //    first; a name is placed below / above / right / left of its icon only where it overlaps no other
+  //    name, no other icon and nothing reserved (player label, abandoned-ship badges, route labels) -
+  //    otherwise it is left out. So names appear as soon as the icons are far enough apart, at any zoom.
+  //  * "always": every object gets its name; if no free spot exists it is placed anyway.
+  //  * "never": only the always-on names above.
+  // Always-on names never overlap each other or the route labels: free spot -> stepped below ->
+  // abbreviated -> a spot further out with a leader line.
+  placeLabels(g, labels, reserved, mode, playerAt) {
+    const T = this.t;
+    const GC = 64, grid = new Map();
+    const cellsOf = (b) => { const out = []; for (let gx = Math.floor(b[0] / GC); gx <= Math.floor(b[2] / GC); gx++) for (let gy = Math.floor(b[1] / GC); gy <= Math.floor(b[3] / GC); gy++) out.push(gx + "," + gy); return out; };
+    const add = (b, owner = null, kind = "label") => { const e = { b, owner, kind }; for (const k of cellsOf(b)) { let a = grid.get(k); if (!a) grid.set(k, (a = [])); a.push(e); } };
+    const hits = (b, self, ignoreIcons = false) => {
+      for (const k of cellsOf(b)) for (const e of grid.get(k) || []) {
+        if ((self !== null && e.owner === self) || (ignoreIcons && e.kind === "icon")) continue;
+        if (b[0] < e.b[2] && b[2] > e.b[0] && b[1] < e.b[3] && b[3] > e.b[1]) return true;
+      }
+      return false;
+    };
+    for (const h of this.hit || []) add([h.x - h.r + 2, h.y - h.r + 2, h.x + h.r - 2, h.y + h.r - 2], h.o && h.o.id, "icon");
+    if (playerAt) {
+      g.font = `13px ${FONT}`;
+      const pw = g.measureText(T("map.you", { name: (this.S.player.object && this.S.player.object.name) || "" })).width;
+      add([playerAt[0] + 20, playerAt[1] - 20, playerAt[0] + 24 + pw, playerAt[1] + 14], "player-label", "reserved");
+    }
+    for (const b of reserved) add(b, null, "reserved");
+    for (const b of this._lineBoxes || []) add(b, null, "reserved");
+    const cx = this.w / 2, cy = this.h / 2;
+    labels.sort((a, b) => a.pri - b.pri || Math.hypot(a.x - cx, a.y - cy) - Math.hypot(b.x - cx, b.y - cy));
+    g.font = `12px ${FONT}`;
+    this.lastLabels = [];
+    const abbrev = (s) => (s.length > 12 ? s.slice(0, 10) + "…" : s);
+    for (const L of labels) {
+      const forced = L.always || L.important || mode === "all";
+      const ownIcon = !L.always && !L.important;       // ordinary names keep clear of other icons too
+      let txt = L.text, w = g.measureText(txt).width;
+      const boxAt = (lx, ly) => [lx - 3, ly - 12, lx + w + 3, ly + 4];
+      const h2 = L.isz / 2;
+      const cands = () => [[L.x - w / 2, L.y + h2 + 12], [L.x - w / 2, L.y - h2 - 8], [L.x + h2 + 6, L.y + 4], [L.x - h2 - 6 - w, L.y + 4]];
+      const free = (p) => !hits(boxAt(p[0], p[1]), L.o, !ownIcon) && p[0] > -w && p[0] < this.w && p[1] > 0 && p[1] < this.h + 12;
+      let pos = cands().find(free), leader = false;
+      if (!pos && forced) {
+        for (let k = 1; !pos && k <= 3; k++) { const c = [L.x - w / 2, L.y + h2 + 12 + 16 * k]; if (free(c)) pos = c; }
+        if (!pos && txt.length > 12) { txt = abbrev(txt); w = g.measureText(txt).width; pos = cands().find(free); }
+        for (let r = 46; !pos && r <= 220; r += 30) {
+          for (let k = 0; k < 12 && !pos; k++) {
+            const a = Math.PI / 6 * k + Math.PI / 12;
+            const c = [L.x + Math.cos(a) * r - w / 2, L.y + Math.sin(a) * r + 4];
+            if (free(c)) { pos = c; leader = true; }
+          }
+        }
+        if (!pos) pos = cands()[0];         // nowhere free at all (extremely dense): keep it readable
+      }
+      if (!pos) continue;                   // "when zoomed in": no room -> no name
+      const box = boxAt(pos[0], pos[1]);
+      add(box, L.o, "label");
+      if (leader) {
+        g.strokeStyle = "rgba(220,232,245,0.55)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(L.x, L.y); g.lineTo(Math.max(box[0], Math.min(box[2], L.x)), Math.max(box[1], Math.min(box[3], L.y))); g.stroke();
+      }
+      if (L.always) {
+        g.fillStyle = "rgba(2,6,14,0.62)";
+        roundRect(g, box[0], box[1], box[2] - box[0], box[3] - box[1], 3); g.fill();
+      }
+      text(g, txt, pos[0], pos[1], rgb(L.col), 12, true);
+      this.lastLabels.push({ text: txt, full: L.text, x: pos[0], y: pos[1], box, leader, id: L.o,
+                             gate: !!L.gate, ownerless: !!L.ownerless, always: !!L.always });
+    }
+  }
+
+  // The sector's hexagon border. With the v1.2 bridge: the game's own sector core (MD sector.coresize =
+  // core diameter, sector.coreposition = its centre): flat-top hexagon centred on the core, apothem =
+  // coresize / 2 (assumption: the game frames the core). Without it (old bridge, watched sectors): the
+  // approximation of mapstyle.sectorHexApothem around the origin, which only grows. The shown hexagon
+  // eases towards the target (size and centre) and holds still while the user drags.
   sectorHexTarget(sid, objs, inPlayer) {
-    const pts = objs.filter((o) => o.x !== null && o.x !== undefined).map((o) => ({ x: +o.x, z: +o.z }));
-    const p = this.S.player && this.S.player.object;
-    if (inPlayer && p && p.x !== null && p.x !== undefined) pts.push({ x: +p.x, z: +p.z });
-    const a = sectorHexApothem(pts, this.radarSources(objs, inPlayer));
     this.secHex = this.secHex || new Map();
-    const st = this.secHex.get(sid) || { target: 0, shown: 0 };
-    st.target = Math.max(st.target, a);
-    if (!st.shown) st.shown = st.target;
+    const st = this.secHex.get(sid) || { target: 0, shown: 0, cx: 0, cz: 0, scx: 0, scz: 0, source: "approx" };
+    const si = this.S.sectorInfo && this.S.sectorInfo[sid];
+    if (si && si.core > 0) {
+      st.target = si.core / 2; st.cx = si.cx || 0; st.cz = si.cz || 0; st.source = "core"; st.contested = !!si.contested;
+    } else {
+      const pts = objs.filter((o) => o.x !== null && o.x !== undefined).map((o) => ({ x: +o.x, z: +o.z }));
+      const p = this.S.player && this.S.player.object;
+      if (inPlayer && p && p.x !== null && p.x !== undefined) pts.push({ x: +p.x, z: +p.z });
+      const a = sectorHexApothem(pts, this.radarSources(objs, inPlayer));
+      st.target = st.source === "approx" ? Math.max(st.target, a) : a;
+      st.cx = 0; st.cz = 0; st.source = "approx"; st.contested = false;
+    }
+    if (!st.shown) { st.shown = st.target; st.scx = st.cx; st.scz = st.cz; }
     this.secHex.set(sid, st);
     return st;
   }
   drawSectorBorder(g, sid, sec, objs, inPlayer) {
     if (!sid) return;
     const st = this.sectorHexTarget(String(sid), objs, inPlayer);
-    if (st.shown < st.target && !this.dragging) {
-      st.shown += Math.max((st.target - st.shown) * 0.15, 1);
-      if (st.shown > st.target) st.shown = st.target;
+    if (!this.dragging && (Math.abs(st.shown - st.target) > 1 || Math.abs(st.scx - st.cx) > 1 || Math.abs(st.scz - st.cz) > 1)) {
+      const k = 0.15;
+      st.shown += (st.target - st.shown) * k; st.scx += (st.cx - st.scx) * k; st.scz += (st.cz - st.scz) * k;
+      if (Math.abs(st.shown - st.target) <= 1) st.shown = st.target;
+      if (Math.abs(st.scx - st.cx) <= 1) st.scx = st.cx;
+      if (Math.abs(st.scz - st.cz) <= 1) st.scz = st.cz;
       this.dirty = true;
     }
     const R = hexRadiusOfApothem(st.shown);
-    const pts = hexPoints(0, 0, R).map(([x, z]) => this.toScreen(x, z));
+    const pts = hexPoints(st.scx, st.scz, R).map(([x, z]) => this.toScreen(x, z));
     const owner = sec && !sec.provisional ? sec.owner : null;
     // owner colour: the player's map colour for own sectors, a light grey for unowned (ownerless) ones
     const col = owner === "player" ? rgb(holo(this.S.theme, "playercolor"))
@@ -1344,10 +1571,13 @@ export class MapView {
     for (const [w, a] of [[22, 0.07], [12, 0.12], [6, 0.22]]) { g.globalAlpha = a; g.lineWidth = w; g.stroke(path); }
     g.restore();
     g.globalAlpha = 1; g.lineWidth = 3; g.strokeStyle = col; g.lineJoin = "round"; g.stroke(path);
+    if (st.contested) {     // contested (MD sector.iscontested): hostile-coloured dashes over the owner's line
+      g.setLineDash([10, 8]); g.lineWidth = 3; g.strokeStyle = rgb(holo(this.S.theme, "hostilecolor")); g.stroke(path); g.setLineDash([]);
+    }
     g.restore();
-    this.lastSectorHex = { sid: String(sid), apothem: st.shown, target: st.target, R, color: col, owner };
+    this.lastSectorHex = { sid: String(sid), apothem: st.shown, target: st.target, R, color: col, owner, cx: st.scx, cz: st.scz,
+                           source: st.source, contested: !!st.contested };
   }
-
   drawInfo(sec, sc, nOwn, nNpc, nHostile, nOwnerless = 0) {
     const T = this.t;
     const res = sec && sec.res ? sec.res.map((r) => r.w).join(", ") : "";
@@ -1385,6 +1615,9 @@ export class MapView {
     const p = S.player && S.player.object;
     const th = S.theme;
     const pp = inPlayer && p && p.x !== undefined && p.x !== null ? this.toScreen(p.x, p.z) : null;
+    // route / order / distance labels: names keep clear of them (placeLabels)
+    this._lineBoxes = [];
+    const lbox = (s, x, y, size) => { g.font = `${size}px ${FONT}`; this._lineBoxes.push([x - 2, y - size, x + g.measureText(s).width + 2, y + 4]); };
     // order queue of the selected own ship (details command, refreshed while selected)
     const sel = S.selected && S.selected.kind === "obj" ? S.selected.id : null;
     const det = sel && S.details ? S.details[sel] : null;
@@ -1400,6 +1633,7 @@ export class MapView {
           g.strokeStyle = rgb(col, 0.85); g.beginPath(); g.moveTo(lx, ly); g.lineTo(x, y); g.stroke();
           g.setLineDash([]); g.fillStyle = rgb(col); g.beginPath(); g.arc(x, y, 4, 0, Math.PI * 2); g.fill(); g.setLineDash([6, 4]);
           text(g, `${i + 1}. ${ord.n || ord.d || ""}`, x + 7, y - 6, rgb(col), 11, true);
+          lbox(`${i + 1}. ${ord.n || ord.d || ""}`, x + 7, y - 6, 11);
           [lx, ly] = [x, y];
         });
         g.restore();
@@ -1424,6 +1658,7 @@ export class MapView {
         g.beginPath(); g.moveTo(pp[0], pp[1]); g.lineTo(to[0], to[1]); g.stroke(); g.restore();
         g.strokeStyle = rgb(col); g.lineWidth = 2; g.beginPath(); g.arc(to[0], to[1], 9, 0, Math.PI * 2); g.stroke();
         text(g, label, to[0] + 12, to[1] + 16, rgb(col), 12, true);
+        lbox(label, to[0] + 12, to[1] + 16, 12);
       }
     }
     // soft target
@@ -1433,6 +1668,7 @@ export class MapView {
       g.save(); g.strokeStyle = "rgba(255,255,255,0.55)"; g.lineWidth = 1.2; g.setLineDash([3, 4]);
       g.beginPath(); g.moveTo(pp[0], pp[1]); g.lineTo(tx, ty); g.stroke(); g.restore();
       text(g, this.fmtDist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, "rgba(255,255,255,0.85)", 11, true);
+      lbox(this.fmtDist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, 11);
     }
   }
 
@@ -1542,22 +1778,42 @@ export class MapView {
       g.globalAlpha = 0.55; g.strokeStyle = fc; g.lineWidth = 1; hexPath(g, x, y, r); g.stroke(); g.globalAlpha = 1;
       this.ghit.push({ x, y, r, s, gx: gs.x, gz: gs.z, wr: gs.r });
     }
-    // 3. links: jump gate connections (legend: plain line), superhighways (superhighwaycolor)
+    // 3. links: jump gate connections (legend: plain line), superhighways (superhighwaycolor). Gate links are
+    //    drawn like the game: a gentle curve between the two gates' actual positions inside the sector
+    //    hexagons (sector centre where a gate end is not known); inactive gates dashed grey.
+    let gateLinks = 0;
     for (const l of S.links || []) {
       const a = geo.sectors.get(l.a), b = geo.sectors.get(l.b);
       if (!a || !b) continue;
-      const [x1, y1] = this.toScreen(a.x, a.z), [x2, y2] = this.toScreen(b.x, b.z);
-      g.strokeStyle = l.kind === "hw" ? rgb(holo(S.theme, "superhighwaycolor"), 0.85) : "rgba(235,242,255,0.55)";
-      g.lineWidth = l.kind === "hw" ? 2.5 : 1.4;
-      g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+      if (l.kind === "hw") {
+        const [x1, y1] = this.toScreen(a.x, a.z), [x2, y2] = this.toScreen(b.x, b.z);
+        g.strokeStyle = rgb(holo(S.theme, "superhighwaycolor"), 0.85); g.lineWidth = 2.5;
+        g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+        continue;
+      }
+      const ga = this.gateOf(l.a, l.b), gb = this.gateOf(l.b, l.a);
+      const pa = ga ? this.gateGalaxyPos(l.a, ga) : [a.x, a.z], pb = gb ? this.gateGalaxyPos(l.b, gb) : [b.x, b.z];
+      const [x1, y1] = this.toScreen(pa[0], pa[1]), [x2, y2] = this.toScreen(pb[0], pb[1]);
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1;
+      const sgn = String(l.a) < String(l.b) ? 1 : -1;            // the same bend whichever end is listed first
+      const cx = mx - dy * 0.12 * sgn, cy = my + dx * 0.12 * sgn;
+      const inactive = (ga && ga.a === false) || (gb && gb.a === false);
+      g.strokeStyle = inactive ? "rgba(150,158,170,0.6)" : "rgba(235,242,255,0.6)"; g.lineWidth = 1.4;
+      if (inactive) g.setLineDash([5, 4]);
+      g.beginPath(); g.moveTo(x1, y1); g.quadraticCurveTo(cx, cy, x2, y2); g.stroke(); g.setLineDash([]);
+      for (const [x, y] of [[x1, y1], [x2, y2]]) { g.fillStyle = "rgba(235,242,255,0.8)"; g.beginPath(); g.arc(x, y, 1.8, 0, Math.PI * 2); g.fill(); }
+      gateLinks++;
     }
+    this.lastGateLinks = gateLinks;
     g.lineWidth = 1;
     for (const st of S.stubs || []) {
       const a = geo.sectors.get(st.s);
       if (!a) continue;
-      const d = Math.hypot(st.x, st.z) || 1;
-      const ex = a.x + st.x / d * a.r * 1.1, ez = a.z + st.z / d * a.r * 1.1;
-      const [x1, y1] = this.toScreen(a.x, a.z), [x2, y2] = this.toScreen(ex, ez);
+      // a known gate into an unknown sector: a short dashed stub from the gate outwards, "?" at its end
+      const [gx, gz] = this.gateGalaxyPos(st.s, st);
+      const dx0 = gx - a.x, dz0 = gz - a.z, d = Math.hypot(dx0, dz0) || 1;
+      const ex = gx + dx0 / d * a.r * 0.45, ez = gz + dz0 / d * a.r * 0.45;
+      const [x1, y1] = this.toScreen(gx, gz), [x2, y2] = this.toScreen(ex, ez);
       g.strokeStyle = "rgba(235,242,255,0.35)"; g.setLineDash([2, 4]);
       g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.setLineDash([]);
       text(g, "?", x2 - 3, y2 + 4, "rgba(235,242,255,0.8)", 13, true);
@@ -1680,6 +1936,14 @@ export class MapView {
       o = this.pick(sx, sy);
       if (o) label = (o.n || this.className(o.c) || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? T("map.tip.own") : isOwnerlessShip(o) ? T("map.tip.ownerless") : o.o ? " · " + this.factionName(o.o) : "") +
         (o.hull !== undefined && o.hull !== null ? T("map.tip.hull", { n: this.fmtNum(o.hull) }) : "");
+      if (!o && this.cfg.resources !== false) {
+        const [wx, wz] = this.toWorld(sx, sy);
+        const rs = this.resourcesAt(this.currentSid(), wx, wz);
+        if (rs.length) {
+          o = { id: "res:" + rs.map((r) => r.w).join(",") };
+          label = T("map.res.tip", { list: rs.sort((a, b) => b.a - a.a).map((r) => this.wareName(r.w) + " " + this.fmtNum(r.a)).join(" · ") });
+        }
+      }
     }
     const id = o ? o.id : null;
     if (id !== (this.hover && this.hover.id)) { this.hover = o; this.dirty = true; }
@@ -1707,7 +1971,7 @@ export class MapView {
 // breathes (still with prefers-reduced-motion) and an "abandoned" badge right of it. Unlike the
 // player's solid white rings, the white selection brackets and amber mission colour. Returns the
 // badge box [x0, y0, x1, y1] so labels keep clear of it.
-export function ownerlessMark(g, x, y, size, t, badge, still = false) {
+export function ownerlessMark(g, x, y, size, t, badge, still = false, avoid = []) {
   const r = size / 2 + 7 + (still ? 0 : 1.5 * Math.sin(t / 450));
   g.save();
   g.lineWidth = 4.5; g.strokeStyle = "rgba(0,0,0,0.75)";
@@ -1718,11 +1982,16 @@ export function ownerlessMark(g, x, y, size, t, badge, still = false) {
   let box = [x + r + 2, y - 7, x + r + 2, y + 7];
   if (badge) {
     g.font = `bold 9px ${FONT}`;
-    const w = g.measureText(badge).width + 8, bx = x + r + 3, by = y - 6;
-    g.fillStyle = rgb(OWNERLESS_COLOR); roundRect(g, bx, by, w, 12, 6); g.fill();
-    g.strokeStyle = "rgba(0,0,0,0.85)"; g.lineWidth = 1; g.stroke();
-    g.fillStyle = "#0b1600"; g.fillText(badge, bx + 4, by + 9);
-    box = [bx - 1, by - 1, bx + w + 1, by + 13];
+    const w = g.measureText(badge).width + 8, by = y - 6;
+    // right of the ring, else left of it; never on top of another badge (then the ring alone marks it)
+    const clash = (b) => avoid.some((a) => b[0] < a[2] && b[2] > a[0] && b[1] < a[3] && b[3] > a[1]);
+    const bx = [x + r + 3, x - r - 3 - w].find((c) => !clash([c - 1, by - 1, c + w + 1, by + 13]));
+    if (bx !== undefined) {
+      g.fillStyle = rgb(OWNERLESS_COLOR); roundRect(g, bx, by, w, 12, 6); g.fill();
+      g.strokeStyle = "rgba(0,0,0,0.85)"; g.lineWidth = 1; g.stroke();
+      g.fillStyle = "#0b1600"; g.fillText(badge, bx + 4, by + 9);
+      box = [bx - 1, by - 1, bx + w + 1, by + 13];
+    }
   }
   g.restore();
   return box;

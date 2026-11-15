@@ -6,7 +6,7 @@ import { MapView } from "./map.js";
 import * as P from "./panels.js";
 import { Dock } from "./dock.js";
 import { iconEl, icon } from "./icons.js";
-import { setIconIndex } from "./mapstyle.js";
+import { setIconIndex, takeSectorExtras } from "./mapstyle.js";
 import { createTranslator } from "./map-strings.js";
 
 // ---------------------------------------------------------------- event bus + store
@@ -153,7 +153,7 @@ function apply(m) {
       S.hello = m.hello;
       S.liveGalaxy = m.galaxy;
       S.gates = m.gates || [];
-      S.scans = m.sectors || {};
+      S.scans = Object.fromEntries(Object.entries(m.sectors || {}).map(([k, v]) => [k, takeSectorExtras(S, v)]));
       S.property = new Map((m.property || []).map((e) => [String(e.id), e]));
       S.propertyMeta = m.property_meta || {};
       S.log = [];
@@ -181,7 +181,7 @@ function apply(m) {
     case "hwlinks": S.hwlinks = m.links || []; rebuildLinks(); bus.emit("galaxy"); break;
     case "sector": {
       const before = S.links.length;
-      S.scans[m.sid] = m;
+      S.scans[m.sid] = takeSectorExtras(S, m);
       if ((m.objs || []).some((o) => o.ds)) { rebuildLinks(); if (S.links.length !== before) bus.emit("galaxy"); }
       bus.emit("scan", m.sid);
       break;
