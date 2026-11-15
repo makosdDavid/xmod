@@ -1,0 +1,122 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* X4 Companion — dark only, the game's look: near-black / deep navy panels, azure accents
+   (libraries\colors.xml: azure UI accents, white text). System fonts only (no external requests). */
+:root {
+  --radius: 0.5rem;
+  --background: oklch(0.13 0.025 255);
+  --foreground: oklch(0.93 0.015 250);
+  --card: oklch(0.17 0.03 255);
+  --card-foreground: oklch(0.93 0.015 250);
+  --popover: oklch(0.18 0.032 255);
+  --popover-foreground: oklch(0.93 0.015 250);
+  --primary: oklch(0.68 0.16 245);
+  --primary-foreground: oklch(0.14 0.03 255);
+  --secondary: oklch(0.24 0.04 255);
+  --secondary-foreground: oklch(0.9 0.02 250);
+  --muted: oklch(0.22 0.035 255);
+  --muted-foreground: oklch(0.68 0.035 250);
+  --accent: oklch(0.27 0.06 250);
+  --accent-foreground: oklch(0.96 0.01 250);
+  --destructive: oklch(0.64 0.21 25);
+  --border: oklch(0.7 0.08 250 / 0.16);
+  --input: oklch(0.7 0.08 250 / 0.24);
+  --ring: oklch(0.68 0.16 245);
+  --chart-1: oklch(0.68 0.16 245);
+  --chart-2: oklch(0.75 0.15 160);
+  --chart-3: oklch(0.8 0.14 85);
+  --chart-4: oklch(0.65 0.2 25);
+  --chart-5: oklch(0.7 0.12 300);
+  --sidebar: oklch(0.15 0.028 255);
+  --sidebar-foreground: oklch(0.93 0.015 250);
+  --sidebar-primary: oklch(0.68 0.16 245);
+  --sidebar-primary-foreground: oklch(0.14 0.03 255);
+  --sidebar-accent: oklch(0.27 0.06 250);
+  --sidebar-accent-foreground: oklch(0.96 0.01 250);
+  --sidebar-border: oklch(0.7 0.08 250 / 0.16);
+  --sidebar-ring: oklch(0.68 0.16 245);
+
+  /* app-specific */
+  --ok: oklch(0.78 0.17 155);
+  --warn: oklch(0.8 0.14 80);
+  --bad: oklch(0.66 0.21 25);
+  --gold: oklch(0.86 0.13 90);
+  --pos: oklch(0.78 0.15 155);
+  --neg: oklch(0.7 0.17 30);
+  --hull: oklch(0.94 0.01 250);
+  --shield: oklch(0.68 0.16 245);
+  --panel-head: oklch(0.19 0.035 255);
+  --font-sans-stack: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono-stack: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-gold: var(--gold);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-hull: var(--hull);
+  --color-shield: var(--shield);
+  --color-panel-head: var(--panel-head);
+  --font-sans: var(--font-sans-stack);
+  --font-mono: var(--font-mono-stack);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    margin: 0;
+    overflow: hidden;
+    font-family: var(--font-sans-stack);
+    font-size: 0.875rem;
+    background:
+      radial-gradient(1200px 800px at 30% 15%, oklch(0.2 0.06 255 / 0.55) 0%, transparent 60%) fixed,
+      var(--background);
+  }
+}

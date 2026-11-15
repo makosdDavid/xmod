@@ -1,13 +1,15 @@
 """X4 Companion local server (v1).
 
   game (x4_companion Lua) <--SN named pipe \\\\.\\pipe\\x4companion (duplex)--> this process
-  this process <--HTTP / WebSocket on 127.0.0.1:8788--> browser dashboard (web/)
+  this process <--HTTP / WebSocket on 127.0.0.1:8788--> browser dashboard (web-dist/ = ui/ build, else web/)
 
 Game -> server: one JSON object per line, "type" = hello | player | theme | galaxy | gates | sector |
   property | property_end | logbook | ticker | messages | missions | offers | factions |
   economy | stats | hotkey | details | ack. Big lists arrive in parts (part/last) and are assembled here.
 Server -> game: "cmd <seq> <name> [args]\\n" lines (allow-listed here AND in the mod).
-Server -> browser: {"type":"init", ...whole state...} on connect, then typed updates.
+Server -> browser: {"type":"init", ...whole state...} on connect, then typed updates. "staticmap" (also
+  init.staticmap) = cluster layout positions {clusters:[{macro, sectors:[{macro,x,z}]}]} of clusters with
+  at least one known sector only (for MapView.setStaticMap; no names/ids of undiscovered sectors).
 Browser -> server: {"type":"control","enabled":bool} | {"type":"cmd","cmd":..,"args":[..],"id":n}
   | {"type":"watch","sid":".."} | {"type":"resync"}.
 
@@ -34,9 +36,11 @@ from pipe import PipeServer, PipeServerError
 
 HOST = "127.0.0.1"
 ROOT = Path(__file__).resolve().parent
-WEB = ROOT / "web"
+WEB = ROOT / "web"              # v1 shell (plain ES modules); also the source of the map module
+DIST = ROOT / "web-dist"        # v2 shell: production build of ui/ (React + shadcn/ui), served when present
 DATA = ROOT / "data"
 LOGDIR = ROOT / "logs"
+STATE = ROOT / "state"          # local, user-owned state (saved layouts); git-ignored
 STALE_AFTER = 3.0
 MAX_LOG = 3000
 MAX_TICKER = 600
@@ -49,10 +53,150 @@ CMD_ARGS = {
 NEED_CONTROL = {"openmap", "select", "target", "guidance", "guidance_end", "stop", "flyto"}
 ID_RE = re.compile(r"^\d{1,20}$")
 STATIC_RE = re.compile(r"^[a-zA-Z0-9_\-]+\.(js|css|html|svg|png|ico|json)$")
+ASSET_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,120}\.(js|css|svg|png|woff2|woff)$")
 ICON_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.png$")
 ICONS = DATA / "icons"          # exported locally by export_icons.py (game data, git-ignored)
 CTYPES = {"js": "text/javascript", "css": "text/css", "html": "text/html", "svg": "image/svg+xml",
-          "png": "image/png", "ico": "image/x-icon", "json": "application/json"}
+          "png": "image/png", "ico": "image/x-icon", "json": "application/json",
+          "woff2": "font/woff2", "woff": "font/woff"}
+
+# ------------------------------------------------------------------ saved layouts (v2 shell)
+LAYOUT_PANELS = {"map", "objects", "info", "property", "log", "missions", "factions", "economy", "diag", "hotkeys"}
+LAYOUT_OPT_KEYS = {"objects", "property", "map", "logcat"}
+LAYOUT_NAME_RE = re.compile(r"^[\w \-.()]{1,40}$")
+LAYOUT_MAX_ITEMS = 30
+LAYOUT_MAX_BYTES = 16 * 1024     # one saved layout (tree + options), as JSON (a real one is ~2 KB)
+LAYOUT_FILE_MAX = 512 * 1024     # the whole file
+
+
+class LayoutError(ValueError):
+    pass
+
+
+def _check_tree(n, depth: int, seen: set) -> None:
+    if not isinstance(n, dict):
+        raise LayoutError("tree node is not an object")
+    size = n.get("size")
+    if isinstance(size, bool) or not isinstance(size, (int, float)) or not (0 <= size <= 100):
+        raise LayoutError("bad size")
+    if n.get("t") == "p":
+        if n.get("id") not in LAYOUT_PANELS or n["id"] in seen:
+            raise LayoutError("bad or duplicate module id")
+        seen.add(n["id"])
+        if "collapsed" in n and not isinstance(n["collapsed"], bool):
+            raise LayoutError("bad collapsed flag")
+        if set(n) - {"t", "id", "size", "collapsed"}:
+            raise LayoutError("unknown module field")
+        return
+    if n.get("t") != "s" or depth > 8:
+        raise LayoutError("bad node type or too deep")
+    if not isinstance(n.get("id"), str) or not (1 <= len(n["id"]) <= 40) or n.get("dir") not in ("row", "col"):
+        raise LayoutError("bad split")
+    kids = n.get("kids")
+    if not isinstance(kids, list) or not (1 <= len(kids) <= 12):
+        raise LayoutError("bad split children")
+    if set(n) - {"t", "id", "size", "dir", "kids"}:
+        raise LayoutError("unknown split field")
+    for k in kids:
+        _check_tree(k, depth + 1, seen)
+
+
+def _check_opts(o) -> None:
+    if not isinstance(o, dict) or set(o) - LAYOUT_OPT_KEYS:
+        raise LayoutError("bad options")
+    for k, v in o.items():
+        if k == "logcat":
+            if not isinstance(v, str) or len(v) > 20:
+                raise LayoutError("bad logbook category")
+            continue
+        if not isinstance(v, dict) or len(v) > 40:
+            raise LayoutError("bad module options")
+        for kk, vv in v.items():
+            if not isinstance(kk, str) or len(kk) > 40:
+                raise LayoutError("bad option key")
+            if vv is not None and not isinstance(vv, (bool, int, float, str)):
+                raise LayoutError("option values must be plain values")
+            if isinstance(vv, str) and len(vv) > 200:
+                raise LayoutError("option text too long")
+
+
+def validate_layout(name, body) -> tuple[str, dict]:
+    """-> (clean name, clean layout) or LayoutError."""
+    if not isinstance(name, str) or not LAYOUT_NAME_RE.match(name.strip()) or not name.strip():
+        raise LayoutError("bad name")
+    if not isinstance(body, dict) or set(body) - {"tree", "opts"}:
+        raise LayoutError("body must be {tree, opts}")
+    if len(jdump(body).encode("utf-8")) > LAYOUT_MAX_BYTES:
+        raise LayoutError("layout too large")
+    tree = body.get("tree")
+    if tree is not None:
+        _check_tree(tree, 0, set())
+    opts = body.get("opts") or {}
+    _check_opts(opts)
+    return name.strip(), {"tree": tree, "opts": opts, "saved": round(time.time())}
+
+
+class LayoutStore:
+    """Named user layouts in <state>/layouts.json (written atomically)."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.path = state_dir / "layouts.json"
+        self.doc = {"v": 1, "default": None, "items": {}}
+        self.load()
+
+    def load(self) -> None:
+        if not self.path.is_file():
+            return
+        try:
+            if self.path.stat().st_size > LAYOUT_FILE_MAX:
+                raise LayoutError("file too large")
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            items = {}
+            for n, it in (raw.get("items") or {}).items():
+                try:
+                    cn, clean = validate_layout(n, {"tree": it.get("tree"), "opts": it.get("opts") or {}})
+                    clean["saved"] = it.get("saved") if isinstance(it.get("saved"), (int, float)) else clean["saved"]
+                    items[cn] = clean
+                except (LayoutError, AttributeError) as e:
+                    log.warning("saved layout %.40r dropped: %s", n, e)
+            d = raw.get("default")
+            self.doc = {"v": 1, "default": d if d in items else None, "items": dict(list(items.items())[:LAYOUT_MAX_ITEMS])}
+        except (ValueError, OSError, AttributeError) as e:
+            log.error("cannot read %s (%s) - starting with no saved layouts; the file is kept as .bad", self.path, e)
+            try:
+                self.path.replace(self.path.with_suffix(".json.bad"))
+            except OSError:
+                pass
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.doc, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def put(self, name, body) -> dict:
+        n, clean = validate_layout(name, body)
+        if n not in self.doc["items"] and len(self.doc["items"]) >= LAYOUT_MAX_ITEMS:
+            raise LayoutError(f"at most {LAYOUT_MAX_ITEMS} saved layouts")
+        self.doc["items"][n] = clean
+        self.save()
+        return self.doc
+
+    def delete(self, name) -> dict:
+        if name not in self.doc["items"]:
+            raise KeyError(name)
+        del self.doc["items"][name]
+        if self.doc["default"] == name:
+            self.doc["default"] = None
+        self.save()
+        return self.doc
+
+    def set_default(self, name) -> dict:
+        if name is not None and name not in self.doc["items"]:
+            raise LayoutError("no such layout")
+        self.doc["default"] = name
+        self.save()
+        return self.doc
 
 log = logging.getLogger("x4companion")
 
@@ -120,9 +264,29 @@ class Store:
                 out.append([ia, ib])
         return out
 
+    def static_layout(self) -> dict:
+        """Cluster layout for the map (MapView.setStaticMap): for every cluster with at least one KNOWN
+        sector, all of that cluster's sectors as {macro, x, z} - positions only, so the map can place a
+        known sector in its correct slot of the cluster hexagon. Nothing else about an undiscovered
+        sector (no name, owner, id) leaves the server; clusters without a known sector are not sent."""
+        if not self.static or not self.galaxy:
+            return {"clusters": []}
+        known = {str(c.get("macro") or "").lower() for c in self.galaxy if c.get("sectors")}
+        out = []
+        for c in self.static.get("clusters") or []:
+            m = str(c.get("macro") or "").lower()
+            if not m or m not in known:
+                continue
+            secs = [{"macro": str(s["macro"]).lower(), "x": float(s.get("x") or 0), "z": float(s.get("z") or 0)}
+                    for s in c.get("sectors") or [] if isinstance(s, dict) and s.get("macro")]
+            if secs:
+                out.append({"macro": m, "sectors": secs})
+        return {"clusters": out}
+
     def snapshot(self) -> dict:
         return {
             "type": "init",
+            "staticmap": self.static_layout(),
             "hwlinks": self.hw_links(),
             "hello": self.hello,
             "galaxy": self.galaxy,
@@ -157,6 +321,7 @@ class Store:
                 self.galaxy_gen = msg.get("gen")
                 out.append({"type": "galaxy", "clusters": items})
                 out.append({"type": "hwlinks", "links": self.hw_links()})
+                out.append({"type": "staticmap", **self.static_layout()})
         elif t == "gates":
             items = self.asm.add(("gates",), msg)
             if items is not None:
@@ -227,7 +392,7 @@ class Store:
 class Client:
     """One browser tab. Latest-only types are coalesced; event types are queued in order."""
 
-    LATEST = {"player", "stats", "status", "galaxy", "gates", "hwlinks", "missions", "offers", "factions",
+    LATEST = {"player", "stats", "status", "galaxy", "gates", "hwlinks", "staticmap", "missions", "offers", "factions",
               "economy", "messages", "hello", "theme"}
 
     def __init__(self, ws: web.WebSocketResponse, origin_ok: bool) -> None:
@@ -470,7 +635,18 @@ class Hub:
 
 
 # ------------------------------------------------------------------ HTTP
-def make_app(hub: Hub, port: int) -> web.Application:
+def pick_web_root(ui: str) -> Path:
+    """auto: the v2 build (web-dist) when it exists, else the v1 shell (web)."""
+    if ui == "legacy":
+        return WEB
+    if ui == "dist" or (DIST / "index.html").is_file():
+        return DIST
+    return WEB
+
+
+def make_app(hub: Hub, port: int, web_root: Path | None = None, layouts: LayoutStore | None = None) -> web.Application:
+    root = web_root or pick_web_root("auto")
+    layouts = layouts or LayoutStore(STATE)
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     allowed_origins = {f"http://{h}" for h in allowed_hosts}
     csp = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
@@ -487,17 +663,75 @@ def make_app(hub: Hub, port: int) -> web.Application:
         return resp
 
     async def index(_r):
-        return web.FileResponse(WEB / "index.html", headers={"Cache-Control": "no-cache"})
+        return web.FileResponse(root / "index.html", headers={"Cache-Control": "no-cache", "Content-Type": "text/html"})
 
     async def static(request: web.Request):
         name = request.match_info["name"]
         if not STATIC_RE.match(name):
             raise web.HTTPNotFound()
-        p = WEB / name
+        p = root / name
         if not p.is_file():
             raise web.HTTPNotFound()
         ext = name.rsplit(".", 1)[1]
         return web.FileResponse(p, headers={"Cache-Control": "no-cache", "Content-Type": CTYPES[ext]})
+
+    async def asset(request: web.Request):
+        # hashed build output of the v2 shell (web-dist/assets): immutable
+        name = request.match_info["name"]
+        if not ASSET_RE.match(name):
+            raise web.HTTPNotFound()
+        p = root / "assets" / name
+        if not p.is_file():
+            raise web.HTTPNotFound()
+        ext = name.rsplit(".", 1)[1]
+        return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable", "Content-Type": CTYPES[ext]})
+
+    # ---- saved layouts: GET is free; writes need no Origin (non-browser) or our own Origin
+    def write_guard(request: web.Request):
+        origin = request.headers.get("Origin")
+        if origin is not None and origin not in allowed_origins:
+            raise web.HTTPForbidden(text="forbidden origin")
+
+    async def read_json(request: web.Request):
+        raw = await request.read()
+        if len(raw) > LAYOUT_MAX_BYTES + 1024:
+            raise web.HTTPRequestEntityTooLarge(max_size=LAYOUT_MAX_BYTES, actual_size=len(raw))
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise web.HTTPBadRequest(text="body is not JSON") from None
+
+    async def layouts_get(_r):
+        return web.json_response(layouts.doc, dumps=jdump, headers={"Cache-Control": "no-store"})
+
+    async def layouts_put(request: web.Request):
+        write_guard(request)
+        body = await read_json(request)
+        try:
+            doc = layouts.put(request.match_info["name"], body)
+        except LayoutError as e:
+            raise web.HTTPBadRequest(text=str(e)) from None
+        log.info("saved layout %r", request.match_info["name"])
+        return web.json_response(doc, dumps=jdump)
+
+    async def layouts_delete(request: web.Request):
+        write_guard(request)
+        try:
+            doc = layouts.delete(request.match_info["name"])
+        except KeyError:
+            raise web.HTTPNotFound(text="no such layout") from None
+        return web.json_response(doc, dumps=jdump)
+
+    async def layouts_default(request: web.Request):
+        write_guard(request)
+        body = await read_json(request)
+        if not isinstance(body, dict) or not (body.get("name") is None or isinstance(body.get("name"), str)):
+            raise web.HTTPBadRequest(text="body must be {name: string|null}")
+        try:
+            doc = layouts.set_default(body.get("name"))
+        except LayoutError as e:
+            raise web.HTTPBadRequest(text=str(e)) from None
+        return web.json_response(doc, dumps=jdump)
 
     async def icon(request: web.Request):
         name = request.match_info["name"]
@@ -568,6 +802,11 @@ def make_app(hub: Hub, port: int) -> web.Application:
     app.router.add_get("/favicon.ico", no_content)
     app.router.add_get("/icons/index.json", icon_index)
     app.router.add_get("/icons/{name}", icon)
+    app.router.add_get("/api/layouts", layouts_get)
+    app.router.add_put("/api/layouts-default", layouts_default)
+    app.router.add_put("/api/layouts/{name}", layouts_put)
+    app.router.add_delete("/api/layouts/{name}", layouts_delete)
+    app.router.add_get("/assets/{name}", asset)
     app.router.add_get("/{name}", static)
     return app
 
@@ -595,7 +834,7 @@ def load_static() -> dict | None:
         return None
 
 
-async def main_async(port: int, pipe_name: str) -> None:
+async def main_async(port: int, pipe_name: str, ui: str = "auto", state_dir: Path = STATE) -> None:
     loop = asyncio.get_running_loop()
     hub = Hub(load_static())
     if not (ICONS / "index.json").is_file():
@@ -607,7 +846,9 @@ async def main_async(port: int, pipe_name: str) -> None:
     )
     hub.pipe = pipe
     pipe.start()
-    runner = web.AppRunner(make_app(hub, port), access_log=None)
+    web_root = pick_web_root(ui)
+    log.info("web UI: %s", web_root)
+    runner = web.AppRunner(make_app(hub, port, web_root, LayoutStore(state_dir)), access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, HOST, port)
     try:
@@ -646,10 +887,13 @@ def main() -> int:
     ap.add_argument("--pipe", default="x4companion", help="pipe name (\\\\.\\pipe\\<name>)")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--log-file", default="x4companion.log")
+    ap.add_argument("--ui", choices=["auto", "dist", "legacy"], default="auto",
+                    help="auto: the v2 build (web-dist) if present, else the v1 shell (web); legacy: always web")
+    ap.add_argument("--state-dir", default=str(STATE), help="folder for saved layouts (layouts.json)")
     a = ap.parse_args()
     setup_logging(a.log_level.upper(), a.log_file)
     try:
-        asyncio.run(main_async(a.port, a.pipe))
+        asyncio.run(main_async(a.port, a.pipe, a.ui, Path(a.state_dir)))
     except PipeServerError as e:
         log.error("%s", e)
         return 2

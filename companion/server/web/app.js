@@ -7,6 +7,7 @@ import * as P from "./panels.js";
 import { Dock } from "./dock.js";
 import { iconEl, icon } from "./icons.js";
 import { setIconIndex } from "./mapstyle.js";
+import { createTranslator } from "./map-strings.js";
 
 // ---------------------------------------------------------------- event bus + store
 const handlers = {};
@@ -405,7 +406,7 @@ function buildLayout() {
                 getMapSid: () => (map ? map.currentSid() : (S.player && S.player.sector ? S.player.sector.id : null)),
                 infoVisible: () => dock && dock.isVisible("info") };
   const mounts = {
-    map: (mod) => { map = new MapView(mod, { S, bus, select, sectorName, factionName, watchSector, headingOf, whereText }); window.__x4map = map; },
+    map: (mod) => { map = new MapView(mod, { S, bus, select, sectorName, factionName, watchSector, headingOf, whereText, t: createTranslator("hu") }); window.__x4map = map; },
     objects: (mod) => P.mountObjects(mod, ctx), info: (mod) => P.mountInfo(mod, ctx), property: (mod) => P.mountProperty(mod, ctx),
     log: (mod) => P.mountLog(mod, ctx), missions: (mod) => P.mountMissions(mod, ctx), factions: (mod) => P.mountFactions(mod, ctx),
     economy: (mod) => P.mountEconomy(mod, ctx), diag: (mod) => P.mountDiag(mod, ctx), hotkeys: (mod) => P.mountHotkeys(mod, ctx),

@@ -7,3 +7,5 @@ data/icons/
 static_map.json
 data/
 *.pyc
+node_modules/
+web-dist/

@@ -3,13 +3,16 @@ over real HTTP and WebSocket, plus the offline Lua bridge test and a syntax chec
 
     uv run --group test python tests\\test_e2e.py
 
-Uses its own pipe name (x4companion_e2e) and ports (8791/8792), so it never touches a running
-server, the v0 pipe/port or the game.
+Uses its own pipe names (x4companion_e2e, x4companion_e2e_legacy) and ports (8791/8792/8793), and a
+temporary --state-dir for saved layouts, so it never touches a running server, the real state\ folder,
+the v0 pipe/port or the game.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,8 +24,8 @@ import aiohttp
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = sys.executable
-PORT = 8791
-PIPE = "x4companion_e2e"
+PORT = int(os.environ.get("X4C_E2E_PORT", "8791"))      # override when 8791 is busy (parallel work)
+PIPE = os.environ.get("X4C_E2E_PIPE", "x4companion_e2e")
 BASE = f"http://127.0.0.1:{PORT}"
 ORIGIN = f"http://127.0.0.1:{PORT}"
 
@@ -52,8 +55,13 @@ def stop(p):
         p.wait(10)
 
 
-def start_server(port=PORT, name="server"):
-    return start(["server.py", "--port", str(port), "--pipe", PIPE, "--log-file", f"e2e_{name}_file.log"], name)
+STATE_DIR = tempfile.mkdtemp(prefix="x4c_e2e_state_")    # saved layouts of the test servers (never the real state/)
+DIST = ROOT / "web-dist"
+
+
+def start_server(port=PORT, name="server", pipe=PIPE, *extra):
+    return start(["server.py", "--port", str(port), "--pipe", pipe, "--log-file", f"e2e_{name}_file.log",
+                  "--state-dir", STATE_DIR, *extra], name)
 
 
 def start_sim(*extra, name="sim"):
@@ -109,6 +117,42 @@ def listening(port):
     return [l.split()[1] for l in out.splitlines() if len(l.split()) >= 4 and l.split()[3] == "LISTENING" and l.split()[1].endswith(f":{port}")]
 
 
+CANVAS_PROBE = """(() => {
+  const c = document.querySelector('.x4map-root canvas');
+  if (!c || !c.width || !c.height || c.clientHeight < 50) return null;
+  const g = c.getContext('2d'); const seen = new Set();
+  for (let i = 1; i < 12; i++) for (let j = 1; j < 12; j++) {
+    const d = g.getImageData(Math.floor(c.width * i / 12), Math.floor(c.height * j / 12), 1, 1).data;
+    seen.add(d[0] + ',' + d[1] + ',' + d[2]);
+  }
+  return { w: c.clientWidth, h: c.clientHeight, colours: seen.size,
+           bad: (document.body.innerText.match(/\\bnull\\b|\\bundefined\\b|\\bNaN\\b/g) || []).length };
+})()"""
+
+
+async def ui_browser_checks():
+    """v2 shell in a real headless browser (own profile): main window and the map pop-out route
+    get a canvas with a real size that draws, and no null/undefined/NaN text anywhere."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    from cdp import Browser, find_browser
+    if not find_browser():
+        check(True, "[ui] no Chromium-based browser here - browser checks skipped")
+        return
+    async with Browser(1920, 1040, port=9336, profile="headless-e2e-ui") as b:
+        for url, w, h, name in ((BASE + "/", 1920, 1040, "main window"), (BASE + "/?panel=map", 1280, 900, "pop-out /?panel=map")):
+            p = await b.page("about:blank", w, h)
+            await p.goto(url)
+            got = await p.wait_for(CANVAS_PROBE + " && " + CANVAS_PROBE + ".colours > 3 ? " + CANVAS_PROBE + " : null", timeout=20)
+            shot = ROOT / "logs" / f"e2e_ui_{'popout_map' if 'panel' in url else 'main'}.png"
+            try:
+                await p.screenshot(shot)
+            except (RuntimeError, TimeoutError):
+                pass
+            check(bool(got) and got["w"] > 300 and got["h"] > 300 and got["colours"] > 3,
+                  f"[ui] {name}: map canvas {got and got['w']}x{got and got['h']} px draws ({got and got['colours']} colours), screenshot {shot.name}")
+            check(bool(got) and got["bad"] == 0, f"[ui] {name}: no null/undefined/NaN text on the page ({got and got['bad']})")
+
+
 async def main() -> int:
     (ROOT / "logs").mkdir(exist_ok=True)
 
@@ -126,25 +170,98 @@ async def main() -> int:
                 if subprocess.run([node, "--check", str(tgt)], capture_output=True).returncode != 0:
                     bad.append(f.name)
         check(not bad, f"web JS modules parse (node --check): {bad or 'all ok'}")
-        for t in ("test_camera.mjs", "test_mapstyle.mjs"):
+        for t in ("test_camera.mjs", "test_mapstyle.mjs", "test_galaxy_layout.mjs"):
             r = subprocess.run([node, str(ROOT / "tests" / t)], capture_output=True, text=True, encoding="utf-8", errors="replace")
             last = [l for l in r.stdout.splitlines() if "checks passed" in l]
             check(r.returncode == 0, f"browser logic {t}: {last[-1] if last else r.stdout[-300:]}")
+        # v2 shell unit tests (formatters, info panel model, layout tree, en/hu token parity)
+        vitest = ROOT / "ui" / "node_modules" / "vitest" / "vitest.mjs"
+        if vitest.is_file():
+            r = subprocess.run([node, str(vitest), "run"], cwd=ROOT / "ui", capture_output=True, text=True, encoding="utf-8", errors="replace")
+            tl = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("Tests")]
+            check(r.returncode == 0, f"v2 shell unit tests (vitest): {tl[-1] if tl else r.stdout[-300:]}")
+    r = subprocess.run([PY, str(ROOT / "tests" / "test_layouts.py")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    last = [l for l in r.stdout.splitlines() if "checks passed" in l]
+    check(r.returncode == 0, f"saved layouts store (save/load/delete/malformed): {last[-1] if last else r.stdout[-300:]}")
 
     server = start_server()
     async with aiohttp.ClientSession() as s:
         check(await wait_http(s), "server answers")
         check(listening(PORT) == [f"127.0.0.1:{PORT}"], f"listens on 127.0.0.1 only: {listening(PORT)}")
+        v2 = (DIST / "index.html").is_file()
         async with s.get(BASE + "/") as r:
             body = await r.text()
-            check(r.status == 200 and 'type="module"' in body and "app.js" in body, "GET / serves the dashboard")
+            if v2:
+                check(r.status == 200 and 'type="module"' in body and "/assets/" in body and 'id="root"' in body, "GET / serves the v2 dashboard (web-dist)")
+            else:
+                check(r.status == 200 and 'type="module"' in body and "app.js" in body, "GET / serves the dashboard")
             check("default-src 'self'" in r.headers.get("Content-Security-Policy", "") and r.headers.get("X-Content-Type-Options") == "nosniff",
                   "CSP (no external sources) + nosniff headers")
-        for f, ct in (("app.js", "text/javascript"), ("map.js", "text/javascript"), ("panels.js", "text/javascript"), ("util.js", "text/javascript"),
-                      ("mapstyle.js", "text/javascript"), ("dock.js", "text/javascript"), ("camera.js", "text/javascript"), ("icons.js", "text/javascript"),
-                      ("style.css", "text/css")):
-            async with s.get(BASE + "/" + f) as r:
-                check(r.status == 200 and ct in r.headers.get("Content-Type", ""), f"GET /{f} ({r.headers.get('Content-Type')})")
+        if v2:
+            assets = re.findall(r'(?:src|href)="(/assets/[^"]+)"', body)
+            check(assets and not re.search(r'(?:src|href)="(?:https?:)?//', body), f"index references only local /assets ({len(assets)})")
+            for a in assets:
+                async with s.get(BASE + a) as r:
+                    data = await r.read()
+                    ct = r.headers.get("Content-Type", "")
+                    ok = r.status == 200 and ("javascript" in ct if a.endswith(".js") else "text/css" in ct if a.endswith(".css") else True)
+                    check(ok and "immutable" in r.headers.get("Cache-Control", ""), f"GET {a} ({ct}, {len(data) // 1024} KB, immutable)")
+                    if a.endswith(".js"):
+                        check(b"fonts.googleapis" not in data and b"cdn.jsdelivr" not in data and b"unpkg.com" not in data,
+                              f"{a}: no CDN / external font URL in the bundle")
+            for path in ("/assets/..%2f..%2fserver.py", "/assets/x.py", "/assets/index.html"):
+                async with s.get(BASE + path) as r:
+                    check(r.status in (403, 404), f"asset route refuses {path} ({r.status})")
+        else:
+            for f, ct in (("app.js", "text/javascript"), ("map.js", "text/javascript"), ("panels.js", "text/javascript"), ("util.js", "text/javascript"),
+                          ("mapstyle.js", "text/javascript"), ("dock.js", "text/javascript"), ("camera.js", "text/javascript"), ("icons.js", "text/javascript"),
+                          ("style.css", "text/css")):
+                async with s.get(BASE + "/" + f) as r:
+                    check(r.status == 200 and ct in r.headers.get("Content-Type", ""), f"GET /{f} ({r.headers.get('Content-Type')})")
+
+        # saved layouts API (v2): save / list / default / delete, malformed input refused
+        tree = {"t": "s", "id": "s1", "dir": "row", "size": 100, "kids": [{"t": "p", "id": "map", "size": 70}, {"t": "p", "id": "info", "size": 30}]}
+        hdr = {"Origin": ORIGIN}
+        async with s.get(BASE + "/api/layouts") as r:
+            check(r.status == 200 and (await r.json())["items"] == {}, "GET /api/layouts: empty at start")
+        async with s.put(BASE + "/api/layouts/Harc%202", json={"tree": tree, "opts": {"map": {"rotate": True}, "logcat": "alerts"}}, headers=hdr) as r:
+            d = await r.json() if r.status == 200 else {}
+            check(r.status == 200 and d.get("items", {}).get("Harc 2", {}).get("tree") == tree, f"PUT /api/layouts/<name> saves ({r.status})")
+        async with s.put(BASE + "/api/layouts-default", json={"name": "Harc 2"}, headers=hdr) as r:
+            check(r.status == 200 and (await r.json())["default"] == "Harc 2", "PUT /api/layouts-default sets the start layout")
+        async with s.put(BASE + "/api/layouts/Temp", json={"tree": None, "opts": {}}, headers=hdr) as r:
+            check(r.status == 200, "PUT a second layout")
+        async with s.delete(BASE + "/api/layouts/Temp", headers=hdr) as r:
+            check(r.status == 200 and "Temp" not in (await r.json())["items"], "DELETE /api/layouts/<name>")
+        async with s.delete(BASE + "/api/layouts/Temp", headers=hdr) as r:
+            check(r.status == 404, f"DELETE of a missing layout -> 404 ({r.status})")
+        big = {g: {f"k{i}": "x" * 190 for i in range(40)} for g in ("map", "objects", "property")}
+        for what, url, kw in (("a bad name", "/api/layouts/..%2f..%2fx", dict(json={"tree": None})),
+                              ("an unknown module", "/api/layouts/x", dict(json={"tree": {"t": "p", "id": "evil", "size": 100}})),
+                              ("an unknown body key", "/api/layouts/x", dict(json={"tree": None, "script": 1})),
+                              ("a non-JSON body", "/api/layouts/x", dict(data=b"{nope")),
+                              ("a too large layout", "/api/layouts/x", dict(json={"tree": None, "opts": big})),
+                              ("an unknown default", "/api/layouts-default", dict(json={"name": "nope"}))):
+            async with s.put(BASE + url, headers=hdr, **kw) as r:
+                check(r.status in (400, 404, 413), f"layouts API refuses {what} ({r.status})")
+        async with s.put(BASE + "/api/layouts/x", json={"tree": None}, headers={"Origin": "http://evil.example"}) as r:
+            check(r.status == 403, f"layouts API refuses a foreign Origin ({r.status})")
+        check((Path(STATE_DIR) / "layouts.json").is_file(), "layouts stored in <state-dir>/layouts.json")
+
+        # the v1 shell stays reachable with --ui legacy (fallback)
+        if v2:
+            leg = start_server(PORT + 2, "server_legacy", PIPE + "_legacy", "--ui", "legacy")
+            lbase = f"http://127.0.0.1:{PORT + 2}"
+            ok = False
+            for _ in range(60):
+                try:
+                    async with s.get(lbase + "/") as r:
+                        ok = r.status == 200 and "app.js" in await r.text()
+                        break
+                except aiohttp.ClientError:
+                    await asyncio.sleep(0.25)
+            check(ok, "--ui legacy serves the v1 shell (web/)")
+            stop(leg)
         for path in ("/..%2fserver.py", "/server.py", "/%2e%2e/pipe.py", "/web/../server.py"):
             async with s.get(BASE + path) as r:
                 check(r.status in (403, 404), f"no file outside web/ via {path} ({r.status})")
@@ -196,6 +313,24 @@ async def main() -> int:
             hwl = ws.of("hwlinks")
             check(hwl and hwl[-1]["links"] and all(a in known_ids and b in known_ids for a, b in hwl[-1]["links"]),
                   f"[discovery] superhighways from the static export only between discovered sectors ({len(hwl[-1]['links']) if hwl else 0})")
+            # cluster layout for the map (MapView.setStaticMap): known clusters only, {macro, x, z} only
+            smsg = ws.of("staticmap")
+            known_cl = {str(c.get("macro") or "").lower() for c in gal}
+            known_sec_macros = {str(x.get("macro") or "").lower() for c in gal for x in c["sectors"]}
+            if smsg:
+                cls = smsg[-1]["clusters"]
+                secs = [x for c in cls for x in c["sectors"]]
+                check(cls and all(c["macro"] in known_cl and set(c) == {"macro", "sectors"} for c in cls),
+                      f"[discovery] staticmap: {len(cls)} clusters, all with a known sector (of {len(known_cl)} known clusters)")
+                check(secs and all(set(x) == {"macro", "x", "z"} for x in secs),
+                      f"[discovery] staticmap sectors carry macro + position only ({len(secs)} sectors, "
+                      f"{sum(1 for x in secs if x['macro'] not in known_sec_macros)} not yet discovered)")
+                static_cl = {str(c["macro"]).lower() for c in json.loads((ROOT / "data" / "static_map.json").read_text(encoding="utf-8"))["clusters"]}
+                check(len(cls) < len(static_cl), f"[discovery] staticmap never sends the whole export ({len(cls)} of {len(static_cl)} clusters)")
+            else:
+                check(False, "[map] staticmap message reaches the browser")
+            if (DIST / "index.html").is_file():
+                await ui_browser_checks()
             prop = {}
             for m in ws.of("property"):
                 for e in m["upd"]:
@@ -310,6 +445,9 @@ async def main() -> int:
         await asyncio.sleep(1.5)
         server = start_server(name="server2")
         check(await wait_http(s), "[server restart] back")
+        async with s.get(BASE + "/api/layouts") as r:
+            d = await r.json()
+            check("Harc 2" in d["items"] and d["default"] == "Harc 2", "[server restart] saved layouts and the start layout survive")
         async with s.ws_connect(BASE + "/ws", origin=ORIGIN) as raw:
             ws = WS(raw)
             got = await ws.pump(10, until=lambda d: d["type"] == "galaxy")

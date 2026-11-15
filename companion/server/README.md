@@ -18,6 +18,17 @@ ennek a helyi szervernek, ami böngészőben mutatja: **http://127.0.0.1:8788** 
 
 Játék nélkül: `sim.cmd` (a szimulátor ugyanazt küldi, mint a mod). Tesztek: `test.cmd`.
 
+### v2 felület (React + shadcn/ui, `ui\`)
+
+- Build (Node 20+; a gyorsítótár D:-n): `cd ui` → `set npm_config_cache=D:\X4-tools\npm-cache` → `npm ci` (első
+  alkalommal) → `npm run build`. A kimenet a `web-dist\` mappa (git-ignored); a szerver ezt szolgálja ki, ha létezik,
+  különben a régi `web\` felületet. Kényszerítés: `server.py --ui legacy|dist`.
+- A térkép (`web\map.js`, `mapstyle.js`, `camera.js`, `map-strings.js`, API: `web\MAP-API.md`) nincs átmásolva: a
+  build a `web\` mappából importálja – a térkép módosítása után újra kell buildelni.
+- Egységtesztek: `npm test` (formázók, Info-panel, elrendezésfa, en/hu kulcsegyezés); a `test.cmd` is futtatja.
+- Mentett elrendezések: a szerver `state\layouts.json`-ban tárolja (git-ignored), `--state-dir` másik mappára.
+- Nyelv: angol alapból, magyar a felső sáv nyelvválasztójában; a szövegek: `ui\src\i18n\en.json`, `hu.json`.
+
 ## Telepítés (a mod)
 
 1. Ellenőrzés: `cd tools\x4validate` → `uv run x4validate --reference "…\reference" ..\..\dev\x4_companion`.

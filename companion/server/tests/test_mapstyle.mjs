@@ -49,5 +49,13 @@ const r = route(links, "1", "4");
 check(r && r.length === 3 && r[0] === "1" && r[2] === "4", `shortest route 1 -> 4: ${r}`);
 check(route(links, "1", "7") === null && route(links, "3", "3").length === 1, "no route into an unconnected part; same sector");
 
+// yaw convention, measured read-only on the live game (2026-11-15, 5937 position pairs of 132 moving
+// objects, 91 % within 20 deg; e.g. yaw -0.6805 rad while moving on bearing -39.1 deg): yaw = radians,
+// clockwise from north (+z) = atan2(dx, dz) = the canvas rotation of a north-pointing icon
+const { headingFromYaw } = await import("../web/mapstyle.js");
+check(Math.abs(headingFromYaw(-0.6805) * 180 / Math.PI - (-39.1)) < 0.5 && headingFromYaw(Math.PI / 2) === Math.atan2(1, 0),
+      "headingFromYaw: yaw is already the screen heading (live-verified sign and zero)");
+check(headingFromYaw(undefined) === 0 && headingFromYaw(NaN) === 0, "headingFromYaw: missing yaw -> north");
+
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail ? 1 : 0);

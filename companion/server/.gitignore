@@ -4,3 +4,8 @@ data/static_map.json
 logs/
 .venv/
 __pycache__/
+# v2 shell: dependencies and build output (sources + package-lock.json are committed)
+ui/node_modules/
+web-dist/
+# local user state (saved layouts)
+state/

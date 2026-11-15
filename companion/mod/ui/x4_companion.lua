@@ -819,6 +819,17 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
 
     local sec = sectorOf(pid)
     if sec ~= 0 then m.sector = { id = idstr(sec), name = cstr(S("c.name", C.GetComponentName, sec)) } end
+    -- v1.2 (M6): on a sector change the galaxy (owner, cluster, a just-discovered sector) and the new
+    -- sector's scan go out at once instead of on their next interval (galaxy: up to 60 s later)
+    if sec ~= 0 and sec ~= W.player_sector then
+        if W.player_sector ~= nil then
+            knownAt = -1e9                                  -- the sector may have been discovered just now
+            if CH.galaxy then CH.galaxy.next_due = 0 end
+            if CH.sector then CH.sector.next_due = 0 end
+            W.sector_changes = (W.sector_changes or 0) + 1
+        end
+        W.player_sector = sec
+    end
 
     -- where is the player: the object we follow is the one the player is in
     local controlled = to64(S("p.controlled", C.GetPlayerControlledShipID))

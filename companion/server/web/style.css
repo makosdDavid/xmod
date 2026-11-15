@@ -151,6 +151,9 @@ body[data-state="paused"] #work, body[data-state="background"] #work { filter: s
 .dock.narrow .mod[data-id="map"] { height: 72vh; }
 .dock.narrow .rz { display: none; }
 body.single #nav, body.single #topbar .tb-group:not(.tb-buttons) { display: none; }
+/* pop-out (?panel=…): with #nav display:none, #work would auto-place into the 2nd ("auto") grid row
+   and collapse to 0 px height (all modules are absolutely positioned) -> blank map. Pin it to the 1fr row. */
+body.single #work { grid-row: 3; }
 body.single .mod { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
 
 /* ------------------------------------------------------------ chips, lists, tables */

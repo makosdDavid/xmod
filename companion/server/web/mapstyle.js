@@ -125,6 +125,248 @@ export function radarCell(sources) {
   return Math.max(2500, maxr / 10);
 }
 
+// ---------------------------------------------------------------- ship heading
+// Bridge "yaw" (GetObjectPositionInSector -> UIPosRot.yaw, radians) -> canvas rotation (radians,
+// clockwise on screen, 0 = icon points north/+z). Checked against live movement in the real game:
+// the bearing atan2(dx, dz) between consecutive positions equals yaw (see tests/test_mapstyle.mjs).
+export function headingFromYaw(yaw) {
+  return Number.isFinite(yaw) ? yaw : 0;
+}
+
+// ---------------------------------------------------------------- galaxy: cluster hexagons
+// Clusters sit on a flat-top hex grid whose edge length is 1e7 m (menu_mapeditor.lua:163
+// clusterGridEdgeLength; galaxy.xml positions step 15e6 m in x and 8.66e6 m in z). Each cluster is
+// one flat-top hexagon of that radius; its sectors are smaller hexagons inside it (the game's
+// galaxy map): 1 sector fills it, 2-3 sectors are half-radius hexagons whose outer vertex is a
+// cluster vertex (centre R/2 from the cluster centre, three of them meet in the middle), 4-7 sectors
+// a third-radius "flower" (centre + 6 around). Which slot a sector gets follows its real offset
+// inside the cluster (relative to the centroid of the cluster's sectors), never its name.
+export const CLUSTER_R = 1e7;
+
+const HALF_SLOTS = [0, 1, 2, 3, 4, 5].map((k) => {
+  const a = Math.PI / 3 * k;
+  return { x: 0.5 * Math.cos(a), z: 0.5 * Math.sin(a), r: 0.5 };
+});
+const FLOWER_SLOTS = [{ x: 0, z: 0, r: 1 / 3 }].concat([0, 1, 2, 3, 4, 5].map((k) => {
+  const a = Math.PI / 6 + Math.PI / 3 * k;
+  return { x: Math.cos(a) / Math.sqrt(3), z: Math.sin(a) / Math.sqrt(3), r: 1 / 3 };
+}));
+
+// flat-top hex lattice slots of radius r that fit into the unit hex (for > 7 sectors)
+function latticeSlots(r) {
+  const out = [];
+  const dx = 1.5 * r, dz = Math.sqrt(3) * r;
+  const n = Math.ceil(1 / r) + 2;
+  for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) {
+    const x = i * dx, z = j * dz + (i & 1 ? dz / 2 : 0);
+    if (hexPoints(x, z, r).every(([px, pz]) => insideHex(px, pz, 0, 0, 1 + 1e-9))) out.push({ x, z, r });
+  }
+  return out;
+}
+
+// is (x, z) inside the flat-top hexagon of radius r centred at (cx, cz)
+export function insideHex(x, z, cx, cz, r) {
+  const ax = Math.abs(x - cx), az = Math.abs(z - cz);
+  const h = r * Math.sqrt(3) / 2;
+  return az <= h && Math.sqrt(3) * ax + az <= Math.sqrt(3) * r;
+}
+
+// flat-top hexagon corners [[x, z], ...] (vertex 0 points east, counter-clockwise in world space)
+export function hexPoints(cx, cz, r) {
+  const pts = [];
+  for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i; pts.push([cx + r * Math.cos(a), cz + r * Math.sin(a)]); }
+  return pts;
+}
+
+function sepOk(slots) {            // half-radius slots must be >= 120 degrees apart (else they overlap)
+  for (let i = 0; i < slots.length; i++) for (let j = i + 1; j < slots.length; j++) {
+    const d = Math.abs(slots[i] - slots[j]) % 6;
+    if (Math.min(d, 6 - d) < 2) return false;
+  }
+  return true;
+}
+
+// sectors: [{ key, x, z }] = sector offsets inside the cluster (metres, any order).
+// Returns { layout: "full"|"half"|"flower"|"lattice", slots: { [key]: { slot, x, z, r } } } with x, z, r
+// in units of the cluster radius (multiply by the drawn cluster radius). Deterministic.
+export function clusterLayout(sectors) {
+  const list = (sectors || []).filter((s) => s && s.key !== undefined && s.key !== null)
+    .map((s) => ({ key: String(s.key), x: +s.x || 0, z: +s.z || 0 }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const n = list.length;
+  const out = {};
+  if (!n) return { layout: "full", slots: out };
+  if (n === 1) { out[list[0].key] = { slot: -1, x: 0, z: 0, r: 1 }; return { layout: "full", slots: out }; }
+  let layout, cand;
+  if (n <= 3) { layout = "half"; cand = HALF_SLOTS; }
+  else if (n <= 7) { layout = "flower"; cand = FLOWER_SLOTS; }
+  else {
+    layout = "lattice";
+    let r = 1 / 5;
+    cand = latticeSlots(r);
+    while (cand.length < n) { r *= 0.85; cand = latticeSlots(r); }
+  }
+  // positions relative to the centroid, scaled so the farthest sector sits on the slot ring
+  const mx = list.reduce((a, s) => a + s.x, 0) / n, mz = list.reduce((a, s) => a + s.z, 0) / n;
+  const ring = layout === "half" ? 0.5 : Math.max(...cand.map((c) => Math.hypot(c.x, c.z)));
+  let m = 0;
+  for (const s of list) m = Math.max(m, Math.hypot(s.x - mx, s.z - mz));
+  const p = list.map((s) => (m < 1 ? { x: 0, z: 0 } : { x: (s.x - mx) / m * ring, z: (s.z - mz) / m * ring }));
+  const cost = (i, k) => (p[i].x - cand[k].x) ** 2 + (p[i].z - cand[k].z) ** 2;
+  let best = null, bestCost = Infinity;
+  if (n <= 7) {
+    const used = new Array(cand.length).fill(false), pick = [];
+    const rec = (i, acc) => {
+      if (acc >= bestCost - 1e-12) return;
+      if (i === n) {
+        if (layout === "half" && !sepOk(pick)) return;
+        bestCost = acc; best = pick.slice(); return;
+      }
+      for (let k = 0; k < cand.length; k++) {
+        if (used[k]) continue;
+        used[k] = true; pick.push(k);
+        rec(i + 1, acc + cost(i, k));
+        pick.pop(); used[k] = false;
+      }
+    };
+    rec(0, 0);
+  } else {          // many sectors (only possible with mods): greedy, farthest first
+    best = new Array(n);
+    const used = new Set();
+    const order = list.map((_, i) => i).sort((a, b) => Math.hypot(p[b].x, p[b].z) - Math.hypot(p[a].x, p[a].z) || a - b);
+    for (const i of order) {
+      let bk = -1, bc = Infinity;
+      for (let k = 0; k < cand.length; k++) if (!used.has(k) && cost(i, k) < bc - 1e-12) { bc = cost(i, k); bk = k; }
+      used.add(bk); best[i] = bk;
+    }
+  }
+  list.forEach((s, i) => { const c = cand[best[i]]; out[s.key] = { slot: best[i], x: c.x, z: c.z, r: c.r }; });
+  return { layout, slots: out };
+}
+
+// The layout source per cluster: the static export (all sectors, independent of discovery) when it
+// has the cluster, else the known sectors of the live data. Returns Map(sectorId -> {x, z, r, cid})
+// in world metres (x, z = sector hexagon centre in galaxy space, r = its drawn radius), plus
+// Map(clusterId -> {x, z, r, n}) for the cluster outlines. drawR = drawn cluster radius.
+export function galaxyGeometry(liveGalaxy, staticByMacro = null, drawR = CLUSTER_R * 0.97) {
+  const sectors = new Map(), clusters = new Map();
+  for (const c of liveGalaxy || []) {
+    const cx = +c.x || 0, cz = +c.z || 0;
+    const known = c.sectors || [];
+    const st = staticByMacro && c.macro ? staticByMacro.get(String(c.macro).toLowerCase()) : null;
+    let lay = null;
+    if (st && known.every((s) => s.macro && st.some((q) => q.macro === String(s.macro).toLowerCase()))) {
+      lay = clusterLayout(st.map((q) => ({ key: q.macro, x: q.x, z: q.z })));
+    }
+    const byMacro = !!lay;
+    if (!lay) lay = clusterLayout(known.map((s) => ({ key: String(s.id), x: s.x, z: s.z })));
+    clusters.set(String(c.id), { id: String(c.id), x: cx, z: cz, r: drawR, layout: lay.layout, name: c.name, macro: c.macro });
+    for (const s of known) {
+      const k = byMacro ? String(s.macro).toLowerCase() : String(s.id);
+      const q = lay.slots[k] || { x: 0, z: 0, r: 1, slot: -1 };
+      sectors.set(String(s.id), { x: cx + q.x * drawR, z: cz + q.z * drawR, r: q.r * drawR, cid: String(c.id), slot: q.slot });
+    }
+  }
+  return { sectors, clusters };
+}
+
+// static_map.json (or its {clusters:[{macro, sectors:[{macro,x,z}]}]} subset) -> Map(clusterMacro -> [{macro,x,z}])
+export function staticClusterIndex(json) {
+  const m = new Map();
+  for (const c of (json && json.clusters) || []) {
+    if (!c || !c.macro) continue;
+    m.set(String(c.macro).toLowerCase(), (c.sectors || []).filter((s) => s && s.macro)
+      .map((s) => ({ macro: String(s.macro).toLowerCase(), x: +s.x || 0, z: +s.z || 0 })));
+  }
+  return m;
+}
+
+// Galaxy indexes for a host shell (same result as app.js rebuildGalaxy + rebuildLinks; gx/gz are the
+// sector hexagon centres of galaxyGeometry). Only discovered data goes in: the live galaxy message.
+export function galaxyIndex(liveGalaxy, gates = [], scans = {}, hwlinks = [], staticByMacro = null) {
+  const geo = galaxyGeometry(liveGalaxy, staticByMacro);
+  const sectors = new Map(), clusters = new Map(), sectorByMacro = new Map();
+  for (const c of liveGalaxy || []) {
+    const secs = c.sectors || [];
+    clusters.set(String(c.id), { id: String(c.id), name: c.name, macro: c.macro, gx: c.x || 0, gz: c.z || 0, n: secs.length });
+    for (const s of secs) {
+      const g = geo.sectors.get(String(s.id));
+      const rec = { id: String(s.id), name: s.name, macro: (s.macro || "").toLowerCase(), owner: s.owner, res: s.res,
+                    cid: String(c.id), cname: c.name, multi: secs.length > 1, gx: g.x, gz: g.z, gr: g.r,
+                    rx: (c.x || 0) + (s.x || 0), rz: (c.z || 0) + (s.z || 0) };
+      sectors.set(rec.id, rec);
+      if (rec.macro) sectorByMacro.set(rec.macro, rec.id);
+    }
+  }
+  const seen = new Set(), links = [], stubs = [], gatesBySector = new Map();
+  const add = (a, b, kind) => {
+    if (!a || !b || a === b || !sectors.has(a) || !sectors.has(b)) return;
+    const key = [a, b].sort().join("|") + kind;
+    if (seen.has(key)) return;
+    seen.add(key); links.push({ a, b, kind });
+  };
+  for (const g of gates || []) {
+    if (g.ds) add(String(g.s), String(g.ds), g.hw ? "hw" : "gate");
+    else if (g.du && !g.hw) stubs.push({ s: String(g.s), x: g.x || 0, z: g.z || 0 });
+    if (!gatesBySector.has(String(g.s))) gatesBySector.set(String(g.s), []);
+    gatesBySector.get(String(g.s)).push(g);
+  }
+  for (const [sid, sc] of Object.entries(scans || {})) for (const o of (sc && sc.objs) || []) {
+    if ((o.c === "gate" || o.c === "highwayentrygate") && o.ds) add(String(sid), String(o.ds), o.c === "gate" ? "gate" : "hw");
+  }
+  for (const [a, b] of hwlinks || []) add(String(a), String(b), "hw");
+  return { sectors, clusters, sectorByMacro, links, stubs, gatesBySector };
+}
+
+// where the galaxy view puts things inside a sector hexagon of screen radius r (y down, relative to its
+// centre): own ship/station counter (icon box), the player's icon, the name's text box (top centre)
+export function sectorMarkerSpots(r) {
+  const inr = r * Math.sqrt(3) / 2;
+  const isz = Math.max(9, Math.min(18, r / 3));
+  const psz = Math.max(10, Math.min(20, r * 0.5));
+  const fs = Math.max(9, Math.min(14, r / 5));
+  return {
+    count: { x: -isz * 0.6, y: inr * 0.55, size: isz, textX: isz * 0.1, textY: inr * 0.55 + 4 },
+    player: { x: 0, y: 0, size: psz },
+    label: { y: -inr + fs + 4, fs, maxW: r * 1.45 },
+  };
+}
+
+// polygons (convex, any orientation) overlap with a positive area? (separating axis test)
+export function polygonsOverlap(a, b, eps = 1e-6) {
+  for (const poly of [a, b]) {
+    for (let i = 0; i < poly.length; i++) {
+      const [x1, z1] = poly[i], [x2, z2] = poly[(i + 1) % poly.length];
+      const nx = z2 - z1, nz = x1 - x2;
+      const len = Math.hypot(nx, nz) || 1;
+      let amin = Infinity, amax = -Infinity, bmin = Infinity, bmax = -Infinity;
+      for (const [x, z] of a) { const d = (x * nx + z * nz) / len; amin = Math.min(amin, d); amax = Math.max(amax, d); }
+      for (const [x, z] of b) { const d = (x * nx + z * nz) / len; bmin = Math.min(bmin, d); bmax = Math.max(bmax, d); }
+      const scale = Math.max(1, Math.abs(amin), Math.abs(amax), Math.abs(bmin), Math.abs(bmax));
+      if (amax <= bmin + eps * scale || bmax <= amin + eps * scale) return false;
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------- responsive map overlays (M10)
+// Map container size (CSS px) -> how the map's own overlays are shown. "full" keeps the v1.1 look;
+// smaller containers get a one-line info pill, a smaller (or on-demand) mini galaxy, the legend and
+// the back-to-ship action as buttons, smaller zoom buttons. map.js places them so they never overlap.
+export function overlayModes(w, h) {
+  const size = w >= 1000 && h >= 600 ? "full" : (w >= 640 && h >= 400 ? "medium" : "small");
+  const full = size === "full";
+  return {
+    size,
+    info: full ? "full" : "pill",
+    mini: full ? "full" : size === "medium" ? "small" : "button",
+    miniW: full ? 210 : 150, miniH: full ? 150 : 100,
+    legend: full ? "panel" : "button",
+    back: full ? "full" : "icon",
+    zoomBtn: size === "small" ? 30 : 38,
+  };
+}
+
 // ---------------------------------------------------------------- shortest gate route (galaxy)
 export function route(links, from, to) {
   if (!from || !to) return null;

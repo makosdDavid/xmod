@@ -256,6 +256,8 @@ class World:
             self.ships[o["id"]] = o
         # NPC traffic is generated per sector when first scanned
         self.npc_done = set()
+        self.discover = False
+        self.jumped = False
         # player
         start = self.home[0]
         self.player_ship = self._obj(start, "ship_m", "player", "Játékos hajója", 0.0, 0.0)
@@ -422,9 +424,12 @@ class World:
         sid = self.player_sector
         if self.player_target_gate is None or self.player_target_gate["s"] != sid:
             gs = [g for g in self.objects[sid].values() if g["c"] == "gate" and g["ds"] in self.known]
+            if self.discover:   # M6 scenario: fly into undiscovered sectors whenever possible
+                new = [g for g in self.objects[sid].values() if g["c"] == "gate" and g["ds"] not in self.known]
+                gs = new or gs
             self.player_target_gate = r.choice(gs) if gs else None
         g = self.player_target_gate
-        speed = 2500.0   # fast, so the simulation shows sector changes in a test run
+        speed = getattr(self, "player_speed", 2500.0)   # fast, so the simulation shows sector changes in a test run
         if g:
             dx, dz = g["x"] - p["x"], g["z"] - p["z"]
             d = math.hypot(dx, dz)
@@ -464,6 +469,12 @@ class World:
         self.objects[sid][p["id"]] = p
         self.player_target_gate = None
         self.target = None
+        if sid not in self.known:      # entering a sector discovers it (the galaxy channel reports it later)
+            self.known.add(sid)
+            se = self.sectors[sid]
+            if se["name"].startswith("SECRET "):
+                se["name"] = se["name"][len("SECRET "):]
+        self.jumped = True
         print(f"[sim] player jumped to {self.sectors[sid]['name']}", flush=True)
 
 
@@ -824,6 +835,11 @@ class Bridge:
             return
         for line in self.cli.read_all():
             self.handle_cmd(line)
+        if self.w.jumped:
+            self.w.jumped = False
+            if self.a.galaxy_on_jump:      # what the bridge does since M6: galaxy + sector scan at once
+                self.due["galaxy"] = 0.0
+                self.due["sector"] = 0.0
         for ch, iv in self.INTERVALS.items():
             if now >= self.due[ch]:
                 self.due[ch] = now + iv / self.a.speed
@@ -862,9 +878,14 @@ def main() -> int:
     ap.add_argument("--pause-at", type=float, default=0)
     ap.add_argument("--pause-for", type=float, default=0)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--discover", action="store_true", help="fly into undiscovered sectors (sector-change / discovery scenario)")
+    ap.add_argument("--galaxy-on-jump", action="store_true", help="send galaxy + sector at once on a sector change (bridge since M6)")
+    ap.add_argument("--player-speed", type=float, default=2500.0)
     a = ap.parse_args()
 
     world = World(a.ships, a.seed, a.bad_bytes)
+    world.discover = a.discover
+    world.player_speed = a.player_speed
     cli = SnLikeClient(a.pipe, a.mode)
     br = Bridge(world, cli, a)
     t0 = time.monotonic()

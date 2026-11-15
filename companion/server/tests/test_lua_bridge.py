@@ -321,6 +321,46 @@ def main() -> int:
           f"cost measured in engine calls instead: sector {st2['ch']['sector']['ops']} ops/frame, pass {st2['ch']['sector']['pops']} ops")
     check(st2["frame"]["ops"] < 400, f"ops frame budget keeps the bridge time-sliced ({st2['frame']['ops']} avg ops/frame)")
 
+    # v1.2 (M6): a sector change pushes the galaxy (incl. a sector discovered just now) and the new
+    # sector's scan at once, instead of up to 60 s later on the galaxy channel's interval
+    rt3 = lupa.LuaRuntime(unpack_returned_tuples=True)
+    rt3.execute((ROOT / "mock_game.lua").read_text(encoding="utf-8"))
+    rt3.execute(src)
+    M3, T3 = rt3.globals().MOCK, rt3.globals().__X4COMPANION_TEST
+    check(T3.CFG.allow.stop is False and T3.CFG.allow.flyto is False, "CFG.allow: stop=false, flyto=false (unchanged default)")
+    def galaxy_msgs(start=0):
+        return [json.loads(s) for s in list(M3.out.values())[start:] if '"type":"galaxy"' in s]
+    for _ in range(80 * 60):                      # two galaxy passes, then 5 s after the last one
+        M3.frame(1 / 60)
+        if len({m["gen"] for m in galaxy_msgs()}) >= 2:
+            break
+    for _ in range(5 * 60):
+        M3.frame(1 / 60)
+    n6 = len(M3.out)
+    for _ in range(2 * 60):                       # control: no sector change -> no galaxy message for a while
+        M3.frame(1 / 60)
+    check(not galaxy_msgs(n6), "control: without a sector change the galaxy channel stays on its 60 s interval")
+    M3.W.objs[520].known = True                   # the player flies into a sector discovered right now
+    M3.W.objs[520].name = "New Sector"
+    M3.W.objs[M3.W.player].sector = 520
+    M3.W.objs[M3.W.ship].sector = 520
+    n7 = len(M3.out)
+    frames = 0
+    got_gal = got_scan = None
+    while frames < 60 and (got_gal is None or got_scan is None):
+        M3.frame(1 / 60)
+        frames += 1
+        new = [json.loads(s) for s in list(M3.out.values())[n7:]]
+        if got_gal is None and any(any(str(x.get("id")) == "520" for c in m.get("items", []) for x in c.get("sectors", []))
+                                   for m in new if m["type"] == "galaxy" and m.get("last")):
+            got_gal = frames
+        if got_scan is None and any(m["type"] == "sector" and m.get("sid") == "520" for m in new):
+            got_scan = frames
+    pl3 = [json.loads(s) for s in list(M3.out.values())[n7:] if '"type":"player"' in s]
+    check(pl3 and pl3[0]["sector"]["id"] == "520", "player message reports the new sector")
+    check(got_gal is not None and got_gal <= 30, f"sector change -> galaxy with the newly discovered sector within {got_gal} frames (was: next 60 s pass)")
+    check(got_scan is not None and got_scan <= 30, f"sector change -> scan of the new sector within {got_scan} frames")
+
     failed = [w for ok, w in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     return 1 if failed else 0

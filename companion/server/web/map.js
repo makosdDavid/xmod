@@ -3,30 +3,57 @@
 //   the game map's colours (GetHoloMapColors via the bridge), constant icon size at every zoom, hull
 //   bar above the icon, names only when zoomed in / selected / hovered, own radar coverage lit on a
 //   dark "not seen" background with a hex-stepped edge, plotted course, target line and the order
-//   lines of a selected own ship.
-//   galaxy view: sector hexes in the owner's faction colour, gate / superhighway connections, the
-//   plotted route, where your ships and stations are.
+//   lines of a selected own ship. Ship icons point where the ship is heading. Stations are drawn above
+//   ships, the player's marker above everything; hit-testing follows the drawing order.
+//   galaxy view: one hexagon per cluster with the owner-coloured "system edge", the sectors inside it
+//   as smaller hexagons (mapstyle.clusterLayout), gate / superhighway connections, the plotted route,
+//   where your ships and stations are.
 // Camera modes: follow (your ship, default) | focus (a selected object) | fit (whole sector / galaxy)
 // | manual (after dragging; returns to follow after the configured idle time).
 // World coordinates: X4 metres, x = east, z = north (drawn up), height ignored.
+// Public API: web/MAP-API.md (stable, additions only).
 "use strict";
-import { el, num, dist, loadSettings, saveSettings, factionColor, CLASS_HU } from "./util.js";
+import { loadSettings, saveSettings, factionColor } from "./util.js";
 import { clampScale, wheelFactor, applyBias, zoomAt, fitScale, pinchFactor } from "./camera.js";
 import { iconEl } from "./icons.js";
-import { objColor, holo, rgb, iconFor, iconSize, isShip, drawIcon, hexCellsInRange, radarCell, route } from "./mapstyle.js";
+import { objColor, holo, rgb, iconFor, iconSize, isShip, drawIcon, hexCellsInRange, radarCell, route,
+         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, CLUSTER_R } from "./mapstyle.js";
+import { withFallback } from "./map-strings.js";
 
-const HEX = 1e7;                 // cluster grid edge length (vanilla menu_mapeditor.lua:163)
+const HEX = CLUSTER_R;           // cluster grid edge length (vanilla menu_mapeditor.lua:163)
+const DRAW_R = HEX * 0.97;       // drawn cluster radius (a thin gap between neighbouring clusters)
 const GRID_STEPS = [500, 1000, 2000, 5000, 10000, 20000, 25000, 50000, 100000, 200000, 500000, 1e6, 2e6, 5e6, 1e7, 2e7, 5e7];
 const FONT = '"Segoe UI", "Inter", system-ui, sans-serif';
+// the v1.1 defaults, unchanged (stored settings are not migrated)
+const DEFAULTS = { labels: "auto", npc: true, grid: true, mini: true, radar: true, lines: true, hull: true,
+                   factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false };
+
+export function migrateMapSettings(raw) {
+  const cfg = Object.assign({}, DEFAULTS, raw || {});
+  if (typeof cfg.labels === "boolean") cfg.labels = cfg.labels ? "auto" : "off";
+  return cfg;
+}
+
+// draw layer of a sector-view object (bottom -> top); the player's marker is drawn after all of them
+export function drawLayer(o) {
+  const c = (o && (o.c || o.class)) || "";
+  if (c === "station") return 4;
+  if (c === "gate" || c === "highwayentrygate") return 3;
+  if (isShip(o)) return o.pl ? 2 : 1;
+  return 0;
+}
 
 export class MapView {
-  constructor(root, ctx) {
+  constructor(root, ctx = {}) {
     this.root = root;
     this.c = ctx;
     this.S = ctx.S;
-    this.cfg = loadSettings("map", { labels: "auto", npc: true, grid: true, mini: true, radar: true, lines: true, hull: true,
-                                      factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false });
-    if (typeof this.cfg.labels === "boolean") this.cfg.labels = this.cfg.labels ? "auto" : "off";
+    this.doc = root.ownerDocument || document;
+    this.win = this.doc.defaultView || window;
+    this.t = withFallback(ctx.t);
+    this.settingsKey = ctx.settingsKey || "map";
+    this.cfg = migrateMapSettings(loadSettings(this.settingsKey, {}));
+    saveSettings(this.settingsKey, this.cfg);
     this.view = { cx: 0, cz: 0, scale: 0.002 };
     this.gview = { cx: 0, cz: 0, scale: 2e-6 };
     this.viewSector = null;           // null = the player's sector
@@ -39,87 +66,363 @@ export class MapView {
     this.pulses = new Map();
     this.dirty = true;
     this.radarCache = { key: "", cells: null, cell: 0 };
+    this.staticIdx = null;
+    this.geoCache = { src: undefined, st: undefined, geo: null };
+    this._unsub = [];
+    this._added = [];
+    this._dead = false;
+    this.w = 0; this.h = 0;
     this.build();
+    this.restoreCam();
     this.bind();
-    requestAnimationFrame((t) => this.frame(t));
+    this.raf =this.win.requestAnimationFrame((t) => this.frame(t));
+  }
+
+  // ---------------------------------------------------------------- small helpers
+  mk(tag, attrs = {}, ...kids) {
+    const e = this.doc.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k === "class") e.className = v;
+      else if (k === "text") e.textContent = v;
+      else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
+      else if (k === "style" && typeof v === "object") Object.assign(e.style, v);
+      else e.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) {
+      if (kid === null || kid === undefined || kid === false || kid === "") continue;
+      e.appendChild(typeof kid === "string" || typeof kid === "number" ? this.doc.createTextNode(String(kid)) : kid);
+    }
+    return e;
+  }
+  on(name, fn) {
+    const guarded = (d) => { if (!this._dead) fn(d); };
+    const r = this.c.bus.on(name, guarded);
+    if (typeof r === "function") this._unsub.push(r);
+    else if (typeof this.c.bus.off === "function") this._unsub.push(() => this.c.bus.off(name, guarded));
+  }
+  emit(name, d) { if (this.c.bus && this.c.bus.emit) this.c.bus.emit(name, d); }
+  sectorName(id) {
+    if (this.c.sectorName) return this.c.sectorName(id);
+    if (!id) return this.t("map.none");
+    const s = this.S.sectors && this.S.sectors.get(String(id));
+    if (s) return s.name;
+    const p = this.S.player;
+    if (p && p.sector && String(p.sector.id) === String(id) && p.sector.name) return p.sector.name;
+    return this.t("map.unknown");
+  }
+  factionName(id) {
+    if (this.c.factionName) return this.c.factionName(id);
+    if (!id) return this.t("map.none");
+    const f = this.S.factions && this.S.factions[id];
+    return f ? f.n : id;
+  }
+  whereText(w) {
+    if (this.c.whereText) return this.c.whereText(w);
+    if (!w) return "";
+    const name = w.name || "?";
+    const docked = w.docked ? this.t("map.where.docked", { name: w.docked }) : "";
+    const k = { pilot: 1, passenger: 1, station: 1, aboard: 1, spacesuit: 1 }[w.mode] ? "map.where." + w.mode : null;
+    return k ? this.t(k, { name, docked }) : name;
+  }
+  heading(yaw) { return (this.c.headingOf || headingFromYaw)(yaw); }
+  select(sel) {
+    if (this.c.select) this.c.select(sel);
+    else { this.S.selected = sel; this.emit("select", sel); }
+  }
+  watch(sid) { if (this.c.watchSector) this.c.watchSector(sid); }
+  className(c) { const k = "map.class." + c; const s = this.t(k); return s === k ? "" : s; }
+  fmtNum(v) { return (v === null || v === undefined || Number.isNaN(+v)) ? this.t("map.none") : new Intl.NumberFormat(this.t("map.locale"), { maximumFractionDigits: 0 }).format(+v); }
+  fmtDist(m) {
+    if (m === null || m === undefined) return this.t("map.none");
+    const loc = this.t("map.locale");
+    return m >= 10000 ? new Intl.NumberFormat(loc, { maximumFractionDigits: 1 }).format(m / 1000) + " km" : new Intl.NumberFormat(loc, { maximumFractionDigits: 0 }).format(m) + " m";
+  }
+  fmtKm(m) {
+    const a = Math.abs(m);
+    if (a >= 1000) return (m / 1000).toLocaleString(this.t("map.locale"), { maximumFractionDigits: a >= 10000 ? 0 : 1 }) + " km";
+    return Math.round(m) + " m";
   }
 
   // ---------------------------------------------------------------- DOM
   build() {
     const r = this.root;
-    this.title = r.querySelector(".ptitle");
-    const tools = r.querySelector(".ptools");
-    this.segSector = el("button", { class: "seg on", title: "Szektornézet (1)", onclick: () => this.setMode("sector") }, "Szektor");
-    this.segGalaxy = el("button", { class: "seg", title: "Galaxisnézet (2)", onclick: () => this.setMode("galaxy") }, "Galaxis");
-    this.selRet = el("select", { class: "small", title: "Kézi mozgatás után ennyi idő múlva tér vissza a követés", onchange: () => {
-      this.cfg.ret = +this.selRet.value; saveSettings("map", this.cfg);
-    } }, ...[[5, "követés 5 mp után"], [8, "követés 8 mp után"], [15, "követés 15 mp után"], [30, "követés 30 mp után"], [0, "követés kézzel"]]
-      .map(([v, t]) => el("option", { value: v, selected: (this.cfg.ret ?? 8) === v }, t)));
-    if (tools) tools.prepend(el("span", { class: "segs" }, this.segSector, this.segGalaxy), this.selRet);
+    const T = this.t;
+    // legacy dock module (.ptitle/.ptools/.pbody) or any container
+    let body = r.querySelector(":scope > .pbody") || r.querySelector(".pbody");
+    this.ownsBody = !body;
+    if (!body) {
+      body = this.mk("div", { class: "x4map-body" });
+      Object.assign(body.style, { position: "relative", flex: "1 1 auto", width: "100%", height: "100%", minHeight: "0", overflow: "hidden" });
+      r.appendChild(body); this._added.push(body);
+    }
+    this.body = body;
+    this.title = this.c.titleEl || r.querySelector(".ptitle");
+    let tools = this.c.toolsEl || r.querySelector(".ptools");
+    this.segSector = this.mk("button", { class: "seg on", onclick: () => this.setMode("sector") });
+    this.segGalaxy = this.mk("button", { class: "seg", onclick: () => this.setMode("galaxy") });
+    this.selRet = this.mk("select", { class: "small", onchange: () => { this.cfg.ret = +this.selRet.value; this.save(); } },
+      ...[5, 8, 15, 30, 0].map((v) => this.mk("option", { value: v, selected: (this.cfg.ret ?? 8) === v })));
+    this.segs = this.mk("span", { class: "segs" }, this.segSector, this.segGalaxy);
+    this.retLbl = this.mk("span", { class: "muted small retlbl" });
+    this.ownTools = !tools;
+    if (!tools) {
+      tools = this.mk("div", { class: "x4map-tools" });
+      Object.assign(tools.style, { position: "absolute", left: "50%", top: "10px", transform: "translateX(-50%)", zIndex: "4", display: "flex", gap: "6px", alignItems: "center", whiteSpace: "nowrap" });
+      body.appendChild(tools);
+      this.toolsBar = tools;
+    }
+    tools.prepend(this.segs, this.retLbl, this.selRet);
+    this._added.push(this.segs, this.retLbl, this.selRet);
 
-    this.canvas = el("canvas", { class: "mapcanvas", tabindex: "-1", "aria-label": "Térkép" });
-    this.info = el("div", { class: "mapinfo" });
-    const zbtn = (icon, title, fn, cls = "") => { const b = el("button", { class: "zbtn " + cls, title, "aria-label": title, onclick: fn }); b.appendChild(iconEl(icon, 18)); return b; };
-    this.zoomBox = el("div", { class: "zoombox" },
-      zbtn("plus", "Nagyítás (+ / görgő / játékbeli gyorsgomb)", () => this.zoom(1.5)),
-      zbtn("minus", "Kicsinyítés (− / görgő / játékbeli gyorsgomb)", () => this.zoom(1 / 1.5)),
-      zbtn("fit", "Illesztés: minden látsszon (0)", () => this.fit()));
-    const chip = (key, label, title) => {
-      const b = el("button", { class: "chip" + (this.cfg[key] ? " on" : ""), title, onclick: () => {
-        this.cfg[key] = !this.cfg[key]; b.classList.toggle("on", !!this.cfg[key]); saveSettings("map", this.cfg); this.dirty = true;
-        if (key === "legend") this.renderLegend();
-      } }, label);
+    this.canvas = this.mk("canvas", { class: "mapcanvas", tabindex: "-1" });
+    Object.assign(this.canvas.style, { position: "absolute", left: "0", top: "0", display: "block", touchAction: "none" });
+    this.info = this.mk("div", { class: "mapinfo" });
+    const zbtn = (icon, fn) => { const b = this.mk("button", { class: "zbtn", onclick: fn }); b.appendChild(iconEl(icon, 18)); return b; };
+    this.zIn = zbtn("plus", () => this.zoom(1.5));
+    this.zOut = zbtn("minus", () => this.zoom(1 / 1.5));
+    this.zFit = zbtn("fit", () => this.fit());
+    this.backIcon = zbtn("ship", () => this.auto());          // compact containers: back-to-ship as a round button
+    this.backIcon.hidden = true;
+    this.zoomBox = this.mk("div", { class: "zoombox" }, this.backIcon, this.zIn, this.zOut, this.zFit);
+    // compact containers: legend / mini galaxy on demand
+    this.legendBtn = this.mk("button", { class: "zbtn mapmini-btn", hidden: true, onclick: () => this.togglePop("legend") });
+    this.legendBtn.appendChild(iconEl("info", 16));
+    this.miniBtn = this.mk("button", { class: "zbtn mapmini-btn", hidden: true, onclick: () => this.togglePop("mini") });
+    this.miniBtn.appendChild(iconEl("galaxy", 16));
+    for (const b of [this.legendBtn, this.miniBtn]) Object.assign(b.style, { position: "absolute", zIndex: "4" });
+    this.legendOpen = false; this.miniOpen = false;
+    this.chips = {};
+    const chip = (key) => {
+      const b = this.mk("button", { class: "chip" + (this.cfg[key] ? " on" : ""), onclick: () => {
+        this.cfg[key] = !this.cfg[key]; b.classList.toggle("on", !!this.cfg[key]); this.save(); this.dirty = true;
+        if (key === "legend" || key === "mini") { this.legendOpen = this.legendOpen && !!this.cfg.legend; this.renderLegend(); }
+      } });
+      this.chips[key] = b;
       return b;
     };
-    const LBL = { auto: "Nevek: nagyításkor", all: "Nevek: mind", off: "Nevek: ki" };
-    this.lblBtn = el("button", { class: "chip", title: "Nevek: mint a játékban csak közelről / kijelölve; mindig; soha", onclick: () => {
+    this.lblBtn = this.mk("button", { class: "chip", onclick: () => {
       this.cfg.labels = { auto: "all", all: "off", off: "auto" }[this.cfg.labels] || "auto";
-      this.lblBtn.textContent = LBL[this.cfg.labels]; saveSettings("map", this.cfg); this.dirty = true;
-    } }, LBL[this.cfg.labels] || LBL.auto);
-    this.layersBtn = el("button", { class: "chip layers-btn", title: "Térképrétegek és beállítások", onclick: () => {
-      this.layers.hidden = !this.layers.hidden; this.layersBtn.classList.toggle("on", !this.layers.hidden);
-    } }, "Rétegek ▾");
-    this.layers = el("div", { class: "layers", hidden: true },
-      chip("radar", "Radar", "A saját radarok által látott terület világos, a többi sötét (mint a játék térképén)"),
-      chip("lines", "Útvonalak", "Kijelölt útvonal, célpont, a kijelölt saját hajó parancsai"),
-      chip("npc", "Más hajók", "Nem saját hajók megjelenítése"),
-      chip("hull", "Burkolat", "Burkolatsáv az ikon fölött"),
-      chip("factioncol", "Frakciószínek", "A játék „frakciószínek” térképszűrője: semleges objektumok a frakció színében"),
-      chip("rotate", "Irány", "Hajóikonok elforgatása a haladási irányba (a játék térképén nem forognak)"),
-      chip("grid", "Rács", "km-rács"), chip("mini", "Mini galaxis", "Kis galaxistérkép a sarokban"),
-      this.lblBtn, chip("legend", "Jelmagyarázat", "A játék térképének jelmagyarázata"));
-    this.legendBox = el("div", { class: "maplegend2", hidden: true });
-    this.followBadge = el("div", { class: "followbadge" });
-    this.backBtn = el("button", { class: "backbtn", title: "Vissza a hajómra (a, Esc, játékbeli gyorsgomb)", onclick: () => this.auto() });
-    this.backBtn.append(iconEl("ship", 18), el("span", {}, "Vissza a hajómra"));
-    this.tip = el("div", { class: "maptip", hidden: true });
-    const body = r.querySelector(".pbody");
+      this.lblBtn.textContent = T("map.labels." + this.cfg.labels); this.save(); this.dirty = true;
+    } });
+    this.layersBtn = this.mk("button", { class: "chip layers-btn", onclick: () => this.togglePop("layers") });
+    this.layers = this.mk("div", { class: "layers", hidden: true },
+      chip("radar"), chip("lines"), chip("npc"), chip("hull"), chip("factioncol"), chip("rotate"), chip("grid"), chip("mini"),
+      this.lblBtn, chip("legend"));
+    this.legendBox = this.mk("div", { class: "maplegend2", hidden: true });
+    this.followBadge = this.mk("div", { class: "followbadge" });
+    this.backBtn = this.mk("button", { class: "backbtn", onclick: () => this.auto() });
+    this.backLbl = this.mk("span", {});
+    this.backBtn.append(iconEl("ship", 18), this.backLbl);
+    this.tip = this.mk("div", { class: "maptip", hidden: true });
+    this.bodyHadClass = body.classList.contains("mapbody");
     body.classList.add("mapbody");
-    body.append(this.canvas, this.info, el("div", { class: "layerbox" }, this.layersBtn, this.layers), this.legendBox, this.zoomBox, this.followBadge, this.backBtn, this.tip);
+    if (!body.style.position && this.win.getComputedStyle && this.win.getComputedStyle(body).position === "static") body.style.position = "relative";
+    this.layerBox = this.mk("div", { class: "layerbox" }, this.layersBtn, this.layers);
+    const kids = [this.canvas, this.info, this.layerBox, this.legendBox, this.zoomBox, this.legendBtn, this.miniBtn, this.followBadge, this.backBtn, this.tip];
+    body.prepend(...kids);
+    this._added.push(...kids);
     this.ctx2d = this.canvas.getContext("2d");
+    this.applyTexts();
     this.setMode(this.cfg.mode || "sector");
+  }
+
+  save() { saveSettings(this.settingsKey, this.cfg); }
+
+  // every user-facing text of the chrome (re-run by setTranslator)
+  applyTexts() {
+    const T = this.t;
+    const set = (e, text, tip) => { if (text !== undefined) e.textContent = text; if (tip !== undefined) { e.title = tip; e.setAttribute("aria-label", tip); } };
+    set(this.segSector, T("map.seg.sector"), T("map.seg.sector.tip"));
+    set(this.segGalaxy, T("map.seg.galaxy"), T("map.seg.galaxy.tip"));
+    this.selRet.title = T("map.ret.tip");
+    this.selRet.setAttribute("aria-label", T("map.ret"));
+    this.retLbl.textContent = T("map.ret");
+    this.retLbl.title = T("map.ret.tip");
+    set(this.backIcon, undefined, T("map.back.tip"));
+    set(this.legendBtn, undefined, T("map.chip.legend"));
+    set(this.miniBtn, undefined, T("map.chip.mini"));
+    for (const o of this.selRet.options) o.textContent = +o.value ? T("map.ret.sec", { n: o.value }) : T("map.ret.manual");
+    this.canvas.setAttribute("aria-label", T("map.aria"));
+    set(this.zIn, undefined, T("map.zoom.in")); set(this.zOut, undefined, T("map.zoom.out")); set(this.zFit, undefined, T("map.zoom.fit"));
+    for (const [k, b] of Object.entries(this.chips)) set(b, T("map.chip." + k), T("map.chip." + k + ".tip"));
+    set(this.lblBtn, T("map.labels." + (this.cfg.labels || "auto")), T("map.labels.tip"));
+    set(this.layersBtn, T("map.layers"), T("map.layers.tip"));
+    this.backBtn.title = T("map.back.tip");
+    this.backLbl.textContent = T("map.back");
+    this._fbText = null; this._infoKey = null; this._title = null;
     this.renderLegend();
+    this.dirty = true;
+  }
+
+  setTranslator(t) { this.t = withFallback(t); this.applyTexts(); }
+
+  setStaticMap(json) {
+    this.staticIdx = json ? staticClusterIndex(json) : null;
+    this.dirty = true;
+  }
+
+  setTitle(text) {
+    if (text === this._title) return;
+    this._title = text;
+    if (this.title) this.title.textContent = text;
+    if (this.c.onTitle) this.c.onTitle(text);
+  }
+
+  // ---------------------------------------------------------------- responsive overlays (M10)
+  // layers list, legend and (compact) mini galaxy are popovers; in compact containers only one is open
+  togglePop(which) {
+    const compact = this.ov && this.ov.size !== "full";
+    if (which === "layers") {
+      this.layers.hidden = !this.layers.hidden;
+      if (!this.layers.hidden && compact) this.legendOpen = false;
+    } else if (which === "legend") {
+      this.legendOpen = !this.legendOpen;
+      if (this.legendOpen && compact) this.layers.hidden = true;
+    } else if (which === "mini") {
+      this.miniOpen = !this.miniOpen;
+      if (this.miniOpen && compact) { this.legendOpen = false; }
+    }
+    this.layersBtn.classList.toggle("on", !this.layers.hidden);
+    this.renderLegend();
+    this.dirty = true;
+  }
+
+  // places every overlay for the current container size; nothing overlaps, nothing leaves the container
+  layoutOverlays() {
+    const W = this.w, H = this.h;
+    if (!W || !H) return;
+    const ov = overlayModes(W, H);
+    const prevSize = this.ov && this.ov.size;
+    this.ov = ov;
+    this.retLbl.hidden = ov.size === "small";      // the select's options explain themselves
+    if (prevSize && prevSize !== ov.size) { this.legendOpen = false; this.miniOpen = false; }
+    const px = (n) => Math.round(n) + "px";
+    const st = (e, o) => Object.assign(e.style, o);
+    const M = 10, zb = ov.zoomBtn;
+    const rel = (e) => { const r = e.getBoundingClientRect(), b = this.body.getBoundingClientRect(); return { l: r.left - b.left, t: r.top - b.top, r: r.right - b.left, b: r.bottom - b.top }; };
+    // tools bar of a plain container (top centre)
+    let top0 = M;
+    if (this.toolsBar) { top0 = M + this.toolsBar.offsetHeight + 6; }
+    // info: full box or one-line pill (top left)
+    const pill = ov.info === "pill";
+    this.info.classList.toggle("pill", pill);
+    st(this.info, { top: px(top0), left: px(M), maxWidth: px(pill ? Math.min(W * 0.42, 340) : Math.min(280, W * 0.42)),
+                    whiteSpace: pill ? "nowrap" : "", overflow: pill ? "hidden" : "", textOverflow: pill ? "ellipsis" : "",
+                    padding: pill ? "3px 10px" : "", borderRadius: pill ? "999px" : "" });
+    if (pill !== this._pill) { this._pill = pill; this._infoKey = null; }
+    // layers button (top right)
+    st(this.layerBox, { top: px(top0), right: px(M) });
+    const lb = rel(this.layersBtn), ib = rel(this.info);
+    // follow banner: centred in the top row if it fits, else its own row below, always truncated
+    const infoR = M + (pill ? Math.min(W * 0.42, 340) : Math.min(280, W * 0.42)) + 26;   // its widest possible extent (+padding)
+    const avail = W - 2 * Math.max(infoR, ib.r, W - lb.l) - 16;
+    let row2 = 0;
+    if (avail >= 120 && !this.toolsBar) {
+      st(this.followBadge, { top: px(top0), left: "50%", transform: "translateX(-50%)", maxWidth: px(Math.min(avail, W * 0.46)) });
+    } else {
+      const t = Math.max(ib.b, lb.b) + 6;
+      st(this.followBadge, { top: px(t), left: px(M), transform: "none", maxWidth: px(W - M - (zb + 24)) });
+      row2 = t + (this.followBadge.offsetHeight || 24);
+    }
+    // bottom-left: mini galaxy (canvas) or its button
+    this.miniBtn.hidden = !(ov.mini === "button" && this.cfg.mini && this.mode === "sector");
+    st(this.miniBtn, { left: px(M), bottom: px(M), width: px(zb), height: px(zb) });
+    const miniShown = this.cfg.mini && this.mode === "sector" && (ov.mini !== "button" || this.miniOpen);
+    const miniY = H - ov.miniH - (ov.mini === "button" ? zb + M + 6 : 12);
+    this.miniRect = miniShown ? { l: 12, t: miniY, r: 12 + ov.miniW, b: miniY + ov.miniH } : null;
+    // legend: panel (full) or button + popover (compact), right of centre, above the scale bar
+    const legendOn = !!this.cfg.legend;
+    this.legendBtn.hidden = !(legendOn && ov.legend === "button");
+    st(this.legendBtn, { right: px(12), bottom: px(40), width: px(zb), height: px(zb) });
+    const showLegend = legendOn && (ov.legend === "panel" || this.legendOpen);
+    this.legendBox.hidden = !showLegend;
+    // zoom column (right edge), vertically centred between the top row and the bottom row
+    const nz = this.backIcon.hidden ? 3 : 4;
+    for (const b of [this.zIn, this.zOut, this.zFit, this.backIcon]) st(b, { width: px(zb), height: px(zb) });
+    const colH = nz * zb + (nz - 1) * 6;
+    const zTop = lb.b + 8, zBot = H - 40 - (this.legendBtn.hidden ? 0 : zb + 8);
+    const zt = Math.max(zTop, Math.min(zBot - colH, (zTop + zBot) / 2 - colH / 2));
+    st(this.zoomBox, { top: px(zt), right: px(12), transform: "none" });
+    const zCol = { l: W - 12 - zb, t: zt, r: W - 12, b: zt + colH };
+    // scale bar keeps the bottom-right corner (drawn on the canvas: x up to W-64, y H-30..H-10)
+    const scaleTop = H - 34;
+    // legend popover / panel
+    if (showLegend) {
+      if (ov.legend === "panel") st(this.legendBox, { right: px(60), bottom: px(44), maxHeight: "", maxWidth: "", overflow: "" });
+      else {
+        const lim = Math.max(row2, lb.b) + 8;
+        st(this.legendBox, { right: px(zb + 24), bottom: px(40), maxHeight: px(Math.max(60, H - 40 - lim)), maxWidth: px(W - zb - 24 - M), overflow: "auto" });
+      }
+    }
+    // layers popover: under its button if it ends above the zoom column, else left of the column
+    const popTop = Math.max(lb.b + 6, row2 ? row2 + 6 : 0);
+    st(this.layers, { position: "absolute", right: "0px", top: px(popTop - top0), maxHeight: "", overflowY: "", width: "max-content", whiteSpace: "nowrap", maxWidth: px(W - zb - 34 - M) });
+    if (!this.layers.hidden) {
+      const nat = this.layers.scrollHeight;
+      const lgR = showLegend ? rel(this.legendBox) : null;
+      if (popTop + nat <= zCol.t - 8 && !row2) {
+        st(this.layers, { right: "0px", maxHeight: "" });
+      } else {
+        let limit = scaleTop;
+        if (lgR) limit = Math.min(limit, lgR.t);
+        if (this.backBtn && !this.backBtn.hidden) limit = Math.min(limit, rel(this.backBtn).t);
+        const mr = this.miniRect;
+        const popL = W - (zb + 24) - (this.layers.offsetWidth || 180);
+        if (mr && popL < mr.r) limit = Math.min(limit, mr.t);
+        st(this.layers, { right: px(zb + 24 - M), maxHeight: px(Math.max(60, limit - 8 - popTop)), overflowY: "auto" });
+      }
+    }
+    // a compact legend popover hides an overlapping mini galaxy while it is open
+    if (showLegend && ov.legend === "button" && this.miniRect) {
+      const L = rel(this.legendBox), m = this.miniRect;
+      if (L.l < m.r && L.r > m.l && L.t < m.b && L.b > m.t) this.miniRect = null;
+    }
+    this.dirty = true;
+  }
+
+  // named rectangles of every visible overlay, in container px (used by tests / host layouts)
+  overlayRects() {
+    const b = this.body.getBoundingClientRect();
+    const out = {};
+    const add = (name, e) => {
+      if (!e || e.hidden || !e.isConnected) return;
+      const r = e.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      out[name] = { l: r.left - b.left, t: r.top - b.top, r: r.right - b.left, b: r.bottom - b.top };
+    };
+    add("info", this.info); add("layersBtn", this.layersBtn);
+    if (!this.layers.hidden) add("layers", this.layers);
+    add("legend", this.legendBox); add("legendBtn", this.legendBtn); add("miniBtn", this.miniBtn);
+    add("zoom", this.zoomBox); add("follow", this.followBadge); add("back", this.backBtn); add("tools", this.toolsBar);
+    if (this.mode === "sector" && this.miniRect && this.miniDrawn) out.mini = { ...this.miniRect };
+    if (this.mode === "sector" && this.scaleRect) out.scale = { ...this.scaleRect };
+    return { w: this.w, h: this.h, rects: out };
   }
 
   renderLegend() {
-    this.legendBox.hidden = !this.cfg.legend;
-    if (!this.cfg.legend) return;
+    if (this.cfg.legend) this.buildLegend();
+    if (this.w) this.layoutOverlays(); else this.legendBox.hidden = !this.cfg.legend;
+  }
+
+  buildLegend() {
     const th = this.S.theme;
+    const T = this.t;
     const rows = [
-      ["ship_s_fight_01", "playercolor", "Saját"], ["ship_s_fight_01", "friendcolor", "Semleges"],
-      ["ship_s_fight_01", "enemycolor", "Ellenséges"], ["ship_s_fight_01", "hostilecolor", "Támadó"],
-      ["ship_s_fight_01", "missioncolor", "Küldetés célpontja"], ["mapob_jumpgate", "gatecolor", "Ugrókapu"],
-      ["mapob_superhighway", "highwaygatecolor", "Szupersztráda-kapu"], ["mapob_shipyard", "friendcolor", "Hajógyár"],
-      ["mapob_tradestation", "friendcolor", "Kereskedőállomás"], ["mapob_satellite_01", "playercolor", "Műhold"],
+      ["ship_s_fight_01", "playercolor", "own"], ["ship_s_fight_01", "friendcolor", "neutral"],
+      ["ship_s_fight_01", "enemycolor", "enemy"], ["ship_s_fight_01", "hostilecolor", "hostile"],
+      ["ship_s_fight_01", "missioncolor", "mission"], ["mapob_jumpgate", "gatecolor", "gate"],
+      ["mapob_superhighway", "highwaygatecolor", "highwaygate"], ["mapob_shipyard", "friendcolor", "shipyard"],
+      ["mapob_tradestation", "friendcolor", "tradestation"], ["mapob_satellite_01", "playercolor", "satellite"],
     ];
-    const box = el("div", { class: "lgrid" });
+    const box = this.mk("div", { class: "lgrid" });
     for (const [ic, ck, label] of rows) {
-      const cv = el("canvas", { width: 22, height: 22 });
+      const cv = this.mk("canvas", { width: 22, height: 22 });
       drawIcon(cv.getContext("2d"), ic, 11, 11, 20, holo(th, ck));
-      box.append(el("span", { class: "lgi" }, cv, el("span", {}, label)));
+      box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend." + label))));
     }
-    box.append(el("span", { class: "lgi" }, el("span", { class: "swatch radar" }), el("span", {}, "Radar által látott")));
-    this.legendBox.replaceChildren(el("div", { class: "lgtitle" }, "Jelmagyarázat" + (th && !th.sim ? " (a játék színei)" : " (közelítő színek – a játék még nem küldte)")), box);
+    box.append(this.mk("span", { class: "lgi" }, this.mk("span", { class: "swatch radar" }), this.mk("span", {}, T("map.legend.radar"))));
+    this.legendBox.replaceChildren(this.mk("div", { class: "lgtitle" }, T("map.legend.title") + (th && !th.sim ? T("map.legend.gameColors") : T("map.legend.approx"))), box);
   }
 
   bind() {
@@ -127,7 +430,7 @@ export class MapView {
     const pointers = new Map();
     let drag = null, pinch = null;
     cv.addEventListener("pointerdown", (e) => {
-      cv.setPointerCapture(e.pointerId);
+      try { cv.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
@@ -164,6 +467,7 @@ export class MapView {
     });
     const end = (e) => {
       if (drag && !drag.moved && !pinch && e.type === "pointerup") this.click(e);
+      if (drag && drag.moved) this.saveCam();
       pointers.delete(e.pointerId);
       if (pointers.size < 2) pinch = null;
       if (!pointers.size) { drag = null; cv.classList.remove("dragging"); }
@@ -182,32 +486,51 @@ export class MapView {
         if (s) this.showSector(s.id);
       } else this.auto();
     });
-    new ResizeObserver(() => this.resize()).observe(this.root.querySelector(".pbody"));
-    window.addEventListener("x4c-layout", () => setTimeout(() => this.resize(), 0));
-    const b = this.c.bus;
-    for (const ev of ["player", "scan", "galaxy", "property", "factions", "status", "details", "icons"]) b.on(ev, () => { this.dirty = true; });
-    b.on("theme", () => { this.dirty = true; this.renderLegend(); });
-    b.on("icons", () => this.renderLegend());
-    b.on("hotkey", (m) => {
+    const RO = this.win.ResizeObserver || (typeof ResizeObserver !== "undefined" ? ResizeObserver : null);
+    if (RO) { this.ro = new RO(() => this.resize()); this.ro.observe(this.body); }
+    this._onLayout = () => this.win.setTimeout(() => { if (!this._dead) this.resize(); }, 0);
+    this.win.addEventListener("x4c-layout", this._onLayout);
+    this.win.addEventListener("resize", this._onLayout);
+    for (const ev of ["player", "scan", "galaxy", "property", "factions", "status", "details", "icons"]) this.on(ev, () => { this.dirty = true; });
+    this.on("theme", () => { this.dirty = true; this.renderLegend(); });
+    this.on("icons", () => this.renderLegend());
+    this.on("hotkey", (m) => {
       if (m.action === "view_toggle") this.toggleMode();
       else if (m.action === "zoom_in") this.zoom(1.6);
       else if (m.action === "zoom_out") this.zoom(1 / 1.6);
       else if (m.action === "zoom_fit") this.fit();
     });
-    b.on("auto", () => this.auto());
-    b.on("select", (sel) => this.onSelect(sel));
-    b.on("sectorchange", () => {
-      // the player jumped: always go to the new sector and the ship
-      this.viewSector = null; this.c.watchSector(null); this.cam = "follow"; this.zoomBias = 1;
-      this.focusObj = null; this.fitPending = true;
+    this.on("auto", () => this.auto());
+    this.on("select", (sel) => this.onSelect(sel));
+    this.on("sectorchange", () => {
+      // manual camera (M7): centre and zoom stay exactly where the user left them
+      if (this.cam === "manual") { this._infoKey = null; this.dirty = true; return; }
+      // the player jumped: go to the new sector and the ship
+      this.viewSector = null; this.watch(null); this.cam = "follow"; this.zoomBias = 1;
+      this.focusObj = null; this.fitPending = true; this._infoKey = null;
       if (this.mode === "galaxy") this.dirty = true;   // the galaxy view stays, it follows the new sector
       else this.setMode("sector");
     });
-    b.on("alert", (items) => {
+    this.on("alert", (items) => {
       const until = performance.now() + 20000;
-      for (const e of items) if (e.ic) this.pulses.set(String(e.ic), until);
+      for (const e of items || []) if (e.ic) this.pulses.set(String(e.ic), until);
     });
-    b.on("resize", () => this.resize());
+    this.on("resize", () => this.resize());
+  }
+
+  destroy() {
+    if (this._dead) return;
+    this._dead = true;
+    if (this.raf) this.win.cancelAnimationFrame(this.raf);
+    if (this._camTimer) this.win.clearTimeout(this._camTimer);
+    if (this.ro) this.ro.disconnect();
+    this.win.removeEventListener("x4c-layout", this._onLayout);
+    this.win.removeEventListener("resize", this._onLayout);
+    for (const u of this._unsub) { try { u(); } catch (e) { /* ignore */ } }
+    this._unsub = [];
+    for (const e of this._added) if (e && e.parentNode) e.parentNode.removeChild(e);
+    this._added = [];
+    if (this.body && !this.ownsBody && !this.bodyHadClass) this.body.classList.remove("mapbody");
   }
 
   v() { return this.mode === "galaxy" ? this.gview : this.view; }
@@ -219,15 +542,40 @@ export class MapView {
     const ret = this.cfg.ret ?? 8;
     this.manualUntil = ret > 0 ? performance.now() + ret * 1000 : Infinity;
     this.lastInteract = performance.now();
+    this.saveCam();
   }
   following() { return this.cam === "follow" && !this.viewSector; }
+  // a manual camera survives a reload and opens the same in a pop-out window (localStorage x4c.<key>.cam)
+  saveCam() {
+    if (this._camTimer) return;
+    this._camTimer = this.win.setTimeout(() => {
+      this._camTimer = null;
+      if (this._dead) return;
+      try {
+        this.win.localStorage.setItem("x4c." + this.settingsKey + ".cam", JSON.stringify({
+          cam: this.cam, view: this.view, gview: this.gview, viewSector: this.viewSector, at: Date.now() }));
+      } catch (e) { /* private mode */ }
+    }, 250);
+  }
+  restoreCam() {
+    let c = null;
+    try { c = JSON.parse(this.win.localStorage.getItem("x4c." + this.settingsKey + ".cam") || "null"); } catch (e) { c = null; }
+    if (!c || c.cam !== "manual" || (this.cfg.ret ?? 8) !== 0) return false;
+    const ok = (v) => v && [v.cx, v.cz, v.scale].every(Number.isFinite) && v.scale > 0;
+    if (ok(c.view)) this.view = { cx: c.view.cx, cz: c.view.cz, scale: clampScale(c.view.scale, "sector") };
+    if (ok(c.gview)) this.gview = { cx: c.gview.cx, cz: c.gview.cz, scale: clampScale(c.gview.scale, "galaxy") };
+    this.cam = "manual"; this.prevCam = "follow"; this.manualUntil = Infinity;
+    if (c.viewSector) { this.viewSector = String(c.viewSector); this.watch(this.viewSector); }
+    return true;
+  }
   auto() {
     this.cam = "follow"; this.manualUntil = 0; this.zoomBias = 1; this.focusObj = null;
-    this.viewSector = null; this.c.watchSector(null);
+    this.viewSector = null; this.watch(null);
     if (this.mode !== "sector") this.setMode("sector");
     this.dirty = true;
+    this.saveCam();
   }
-  fit() { this.cam = "fit"; this.zoomBias = 1; this.manualUntil = 0; this.lastInteract = performance.now(); this.dirty = true; }
+  fit() { this.cam = "fit"; this.zoomBias = 1; this.manualUntil = 0; this.lastInteract = performance.now(); this.dirty = true; this.saveCam(); }
   // f > 1 zooms in. Around (sx, sy) in manual mode; auto modes keep their target and change the bias.
   zoom(f, sx, sy) {
     if (!Number.isFinite(f) || f <= 0) return;
@@ -244,30 +592,35 @@ export class MapView {
     }
     this.lastInteract = performance.now();
     this.dirty = true;
+    this.saveCam();
   }
   setMode(m) {
+    m = m === "galaxy" ? "galaxy" : "sector";
     this.mode = m;
-    this.cfg.mode = m; saveSettings("map", this.cfg);
+    this.cfg.mode = m; this.save();
     this.segSector.classList.toggle("on", m === "sector");
     this.segGalaxy.classList.toggle("on", m === "galaxy");
     this.zoomBias = 1;
     this.fitPending = true;
     this.dirty = true;
-    this.c.bus.emit("mapmode", m);
+    this._infoKey = null;
+    if (this.w) this.layoutOverlays();
+    this.emit("mapmode", m);
   }
   toggleMode() { this.setMode(this.mode === "galaxy" ? "sector" : "galaxy"); }
 
   showSector(sid) {
-    sid = String(sid);
-    const ps = this.S.player && this.S.player.sector ? this.S.player.sector.id : null;
-    this.viewSector = sid === ps ? null : sid;
-    this.c.watchSector(this.viewSector);
+    sid = sid === null || sid === undefined ? null : String(sid);
+    const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
+    this.viewSector = !sid || sid === ps ? null : sid;
+    this.watch(this.viewSector);
     this.setMode("sector");
     this.cam = this.viewSector ? "fit" : "follow";
+    this.saveCam();
     this.fitPending = true;
     this.lastInteract = performance.now();
     this.dirty = true;
-    this.c.bus.emit("mapsector", this.currentSid());
+    this.emit("mapsector", this.currentSid());
   }
 
   onSelect(sel) {
@@ -276,31 +629,35 @@ export class MapView {
     if (sel.kind === "sector") { if (sel.from !== "galaxy") this.showSector(sel.id); return; }
     if (sel.from === "map") return;          // clicking on the map does not move the map
     const S = this.S;
-    const p = S.property.get(sel.id);
+    const p = S.property && S.property.get(sel.id);
     const sid = sel.sid || (p ? p.s : this.findScanSector(sel.id));
     if (!sid) return;
-    const ps = S.player && S.player.sector ? S.player.sector.id : null;
-    if (sid !== ps) { this.viewSector = sid; this.c.watchSector(sid); } else { this.viewSector = null; this.c.watchSector(null); }
+    const ps = S.player && S.player.sector ? String(S.player.sector.id) : null;
+    if (String(sid) !== ps) { this.viewSector = String(sid); this.watch(this.viewSector); } else { this.viewSector = null; this.watch(null); }
     if (this.mode !== "sector") this.setMode("sector");
-    this.cam = "focus"; this.focusObj = sel.id; this.manualUntil = 0; this.zoomBias = 1;
+    this.cam = "focus"; this.focusObj = sel.id; this.manualUntil = 0; this.zoomBias = 1; this.saveCam();
     this.lastInteract = performance.now();
-    this.c.bus.emit("mapsector", sid);
+    this.emit("mapsector", String(sid));
   }
   findScanSector(id) {
-    for (const [sid, sc] of Object.entries(this.S.scans)) if ((sc.objs || sc.items || []).some((o) => o.id === id)) return sid;
+    for (const [sid, sc] of Object.entries(this.S.scans || {})) if ((sc.objs || sc.items || []).some((o) => o.id === id)) return sid;
     return null;
   }
   centerOn(id) { this.onSelect({ kind: "obj", id, from: "list" }); }
 
   resize() {
-    const b = this.root.querySelector(".pbody");
-    const dpr = window.devicePixelRatio || 1;
-    this.w = b.clientWidth; this.h = b.clientHeight;
-    if (!this.w || !this.h) return;
-    this.canvas.width = Math.max(1, Math.round(this.w * dpr));
-    this.canvas.height = Math.max(1, Math.round(this.h * dpr));
-    this.canvas.style.width = this.w + "px"; this.canvas.style.height = this.h + "px";
+    if (this._dead) return;
+    const b = this.body;
+    const dpr = this.win.devicePixelRatio || 1;
+    const w = b.clientWidth, h = b.clientHeight;
+    if (!w || !h) { this.w = 0; this.h = 0; return; }
+    if (w === this.w && h === this.h && this._dpr === dpr) return;
+    this.w = w; this.h = h; this._dpr = dpr;
+    this.canvas.width = Math.max(1, Math.round(w * dpr));
+    this.canvas.height = Math.max(1, Math.round(h * dpr));
+    this.canvas.style.width = w + "px"; this.canvas.style.height = h + "px";
     this.ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.layoutOverlays();
     this.dirty = true;
   }
 
@@ -310,15 +667,63 @@ export class MapView {
   // ---------------------------------------------------------------- data for the shown sector
   currentSid() {
     const p = this.S.player;
-    return this.viewSector || (p && p.sector ? p.sector.id : null);
+    return this.viewSector || (p && p.sector ? String(p.sector.id) : null);
+  }
+  // galaxy geometry (cluster + sector hexagons), cached per live galaxy / static map
+  geo() {
+    const src = this.S.liveGalaxy, st = this.staticIdx;
+    if (this.geoCache.src !== src || this.geoCache.st !== st || !this.geoCache.geo) {
+      this.geoCache = { src, st, geo: galaxyGeometry(src, st, DRAW_R) };
+    }
+    return this.geoCache.geo;
+  }
+  // The sector record: the galaxy data, or - right after a jump into a sector the galaxy message has
+  // not reported yet (the bridge sends it on its slow interval) - what the player message and the
+  // scan already tell (name, position estimated from the gates' known destinations). M6.
+  sectorRec(sid) {
+    if (!sid) return null;
+    sid = String(sid);
+    const S = this.S;
+    const s = S.sectors && S.sectors.get(sid);
+    if (s) return s;
+    const p = S.player;
+    if (!(p && p.sector && String(p.sector.id) === sid)) return null;
+    return { id: sid, name: p.sector.name || this.t("map.unknown"), owner: undefined, provisional: true };
+  }
+  sectorGeo(sid) {
+    if (!sid) return null;
+    sid = String(sid);
+    const g = this.geo().sectors.get(sid);
+    if (g) return g;
+    if (this._estKey && this._estKey[0] === sid && performance.now() - this._estKey[1] < 1000) return this._est;
+    // estimate: each gate with a known destination D points from here towards D
+    const geo = this.geo();
+    const sc = this.S.scans && this.S.scans[sid];
+    const objs = (sc && (sc.objs || sc.items)) || [];
+    const gates = objs.filter((o) => (o.c === "gate" || o.c === "highwayentrygate") && o.ds).concat((this.S.gatesBySector && this.S.gatesBySector.get(sid)) || []);
+    let sx = 0, sz = 0, n = 0;
+    for (const o of gates) {
+      const d = geo.sectors.get(String(o.ds));
+      const len = Math.hypot(o.x || 0, o.z || 0);
+      if (!d || !len) continue;
+      sx += d.x - (o.x / len) * HEX * Math.sqrt(3); sz += d.z - (o.z / len) * HEX * Math.sqrt(3); n++;
+    }
+    let est = null;
+    if (n) est = { x: sx / n, z: sz / n, r: HEX * 0.5, cid: null, estimated: true };
+    else {
+      const pp = this.S.prevPlayer && this.S.prevPlayer.sector ? geo.sectors.get(String(this.S.prevPlayer.sector.id)) : null;
+      if (pp) est = { x: pp.x, z: pp.z, r: HEX * 0.5, cid: null, estimated: true, unplaced: true };
+    }
+    this._estKey = [sid, performance.now()]; this._est = est;
+    return est;
   }
   objects() {
     const sid = this.currentSid();
-    const sc = sid ? this.S.scans[sid] : null;
+    const sc = sid ? (this.S.scans || {})[sid] : null;
     let objs = sc ? (sc.objs || sc.items || []) : [];
     if (!objs.some((o) => o.c === "gate")) {
-      const gs = this.S.gatesBySector.get(String(sid)) || [];
-      objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z, ds: g.ds, du: g.du, n: g.hw ? "Szupersztráda" : "Ugrókapu" })));
+      const gs = (this.S.gatesBySector && this.S.gatesBySector.get(String(sid))) || [];
+      objs = objs.concat(gs.map((g) => ({ id: g.id, c: g.hw ? "highwayentrygate" : "gate", x: g.x, z: g.z, ds: g.ds, du: g.du, n: g.hw ? this.t("map.highway") : this.t("map.gate") })));
     }
     return { sid, sc, objs };
   }
@@ -327,11 +732,13 @@ export class MapView {
     const cur = S.player && S.player.object ? S.player.object.id : null;
     return objColor(o, S.theme, { currentId: cur, factionColors: this.cfg.factioncol, factions: S.factions });
   }
+  isLive() { const st = this.S.status; return (this.S.wsOpen === undefined || this.S.wsOpen) && !!st && st.game === "live"; }
 
   // ---------------------------------------------------------------- animation loop
   frame(t) {
-    requestAnimationFrame((tt) => this.frame(tt));
-    if (!this.w) { this.resize(); if (!this.w) return; }
+    if (this._dead) return;
+    this.raf = this.win.requestAnimationFrame((tt) => this.frame(tt));
+    if (!this.w || !this.h) { this.resize(); if (!this.w) return; }
     if (this.root.hidden || this.root.classList.contains("collapsed")) return;
     const anim = this.updateCamera();
     if (!this.dirty && !anim && !this.pulses.size) return;
@@ -344,7 +751,8 @@ export class MapView {
   updateCamera() {
     const now = performance.now();
     if (this.cam === "manual" && now >= this.manualUntil) { this.cam = this.prevCam === "fit" ? "fit" : (this.focusObj ? "focus" : "follow"); this.zoomBias = 1; }
-    if (this.viewSector && this.cam !== "focus" && now - this.lastInteract > 60000 && document.body.dataset.state === "live") this.auto();
+    // the 60 s return from a watched sector applies to the automatic camera modes only - never to manual (M7)
+    if (this.viewSector && this.cam !== "focus" && this.cam !== "manual" && now - this.lastInteract > 60000 && this.isLive()) this.auto();
     this.updateFollowUi(now);
     if (this.cam === "manual") return false;
     const target = this.mode === "galaxy" ? this.autoGalaxy() : this.autoSector();
@@ -363,29 +771,32 @@ export class MapView {
 
   updateFollowUi(now) {
     const S = this.S;
+    const T = this.t;
     const p = S.player;
-    const who = p && p.object ? (p.object.name || "hajó") : "–";
+    const who = p && p.object ? (p.object.name || T("map.ship")) : T("map.none");
     let text, cls;
     if (this.cam === "follow" && !this.viewSector) {
-      text = this.mode === "galaxy" ? "Követés: " + (p && p.sector ? p.sector.name : "") :
-        "Követés: " + who + (p && p.where ? " · " + this.c.whereText(p.where) : "");
+      text = this.mode === "galaxy" ? T("map.follow", { name: p && p.sector ? p.sector.name : "" }) :
+        T("map.follow", { name: who + (p && p.where ? " · " + this.whereText(p.where) : "") });
       cls = "on";
     } else if (this.cam === "focus") {
-      const o = this.objects().objs.find((x) => x.id === this.focusObj) || S.property.get(this.focusObj) || {};
-      text = "Kijelölve: " + (o.n || this.focusObj) + (this.viewSector ? " · " + this.c.sectorName(this.viewSector) : "");
+      const o = this.objects().objs.find((x) => x.id === this.focusObj) || (S.property && S.property.get(this.focusObj)) || {};
+      text = T("map.selected", { name: (o.n || this.focusObj) + (this.viewSector ? " · " + this.sectorName(this.viewSector) : "") });
       cls = "focus";
     } else if (this.cam === "fit") {
-      text = "Áttekintés" + (this.viewSector ? ": " + this.c.sectorName(this.viewSector) : "");
+      text = this.viewSector ? T("map.overviewOf", { name: this.sectorName(this.viewSector) }) : T("map.overview");
       cls = "focus";
     } else {
       const left = this.manualUntil === Infinity ? null : Math.max(0, Math.ceil((this.manualUntil - now) / 1000));
-      text = "Kézi nézet" + (left !== null ? ` · követés ${left} mp múlva` : " · követés kikapcsolva");
+      text = T("map.manual") + (left !== null ? T("map.manual.in", { n: left }) : T("map.manual.off"));
       cls = "off";
     }
     if (this._fbText !== text) { this.followBadge.textContent = text; this._fbText = text; }
     this.followBadge.className = "followbadge " + cls;
     const following = this.cam === "follow" && !this.viewSector && this.mode === "sector";
-    this.backBtn.hidden = following;
+    const icon = this.ov && this.ov.back === "icon";
+    const bh = following || icon, ih = following || !icon;
+    if (this.backBtn.hidden !== bh || this.backIcon.hidden !== ih) { this.backBtn.hidden = bh; this.backIcon.hidden = ih; this.layoutOverlays(); }
     if (this.cam === "manual") this.dirty = true;
   }
 
@@ -441,14 +852,15 @@ export class MapView {
 
   autoGalaxy() {
     const S = this.S;
-    if (!S.sectors.size) return null;
-    const ps = S.player && S.player.sector ? S.sectors.get(S.player.sector.id) : null;
+    const geo = this.geo();
+    if (!geo.clusters.size) return null;
+    const ps = S.player && S.player.sector ? this.sectorGeo(S.player.sector.id) : null;
     let cx, cz, half;
     if (ps && this.cam !== "fit") {
-      cx = ps.gx; cz = ps.gz; half = HEX * 7;
+      cx = ps.x; cz = ps.z; half = HEX * 7;
     } else {
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-      for (const s of S.sectors.values()) { x0 = Math.min(x0, s.gx); x1 = Math.max(x1, s.gx); z0 = Math.min(z0, s.gz); z1 = Math.max(z1, s.gz); }
+      for (const c of geo.clusters.values()) { x0 = Math.min(x0, c.x); x1 = Math.max(x1, c.x); z0 = Math.min(z0, c.z); z1 = Math.max(z1, c.z); }
       cx = (x0 + x1) / 2; cz = (z0 + z1) / 2; half = Math.max(x1 - x0, z1 - z0) / 2 + HEX;
     }
     const base = fitScale(half, this.w, this.h, "galaxy", 1);
@@ -511,14 +923,15 @@ export class MapView {
   // ---------------------------------------------------------------- sector view
   drawSector(g, t) {
     const S = this.S;
+    const T = this.t;
     const { sid, sc, objs } = this.objects();
-    const sec = sid ? S.sectors.get(String(sid)) : null;
+    const sec = this.sectorRec(sid);
     const v = this.view;
     const p = S.player && S.player.object;
     const inPlayer = !this.viewSector;
     const th = S.theme;
-    this.title.textContent = "Térkép · " + (sec ? sec.name : (S.player && S.player.sector ? S.player.sector.name : "Szektor")) +
-      (this.viewSector ? " (figyelt szektor)" : "");
+    this.setTitle(T("map.title", { name: sec ? sec.name : (S.player && S.player.sector ? S.player.sector.name : T("map.title.sector")) }) +
+      (this.viewSector ? T("map.title.watched") : ""));
     this.drawBackground(g);
     if (this.cfg.radar) this.drawRadar(g, objs, inPlayer);
     if (this.cfg.grid) this.drawGrid(g);
@@ -538,9 +951,9 @@ export class MapView {
     // lines below the icons
     if (this.cfg.lines) this.drawLines(g, sid, objs, inPlayer);
 
-    const order = { gate: 0, highwayentrygate: 0, station: 1 };
+    // draw order (M1): misc < NPC ships < own ships < gates < stations; the player marker last
     const sorted = objs.filter((o) => o.x !== null && o.x !== undefined)
-      .sort((a, b) => (order[a.c] ?? 2) - (order[b.c] ?? 2) || (a.pl ? 1 : 0) - (b.pl ? 1 : 0));
+      .map((o, i) => [o, drawLayer(o), i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map((x) => x[0]);
     this.hit = [];
     const labels = [];
     let nNpc = 0, nOwn = 0, nHostile = 0;
@@ -554,7 +967,7 @@ export class MapView {
       if (ship) { if (o.pl) nOwn++; else nNpc++; if (o.h) nHostile++; }
       const col = this.colorOf(o);
       const size = iconSize(o, scale);
-      const rot = this.cfg.rotate && ship && typeof o.yaw === "number" ? this.c.headingOf(o.yaw) : 0;
+      const rot = this.cfg.rotate && ship && typeof o.yaw === "number" ? this.heading(o.yaw) : 0;
       drawIcon(g, iconFor(o), x, y, size, col, rot);
       const important = o.id === sel || (tg && tg.id === o.id) || (this.hover && this.hover.id === o.id);
       if (this.cfg.hull && o.hull !== undefined && o.hull !== null && (ship || o.c === "station") && (important || nameZoom || (!many && o.pl))) {
@@ -568,24 +981,53 @@ export class MapView {
       this.hit.push({ x, y, r: size / 2 + 3, o });
       const wantLabel = lblMode === "all" || important ||
         (lblMode === "auto" && (nameZoom || (stationZoom && (o.c === "station" || o.c === "gate" || o.c === "highwayentrygate"))));
-      if (wantLabel && lblMode !== "off" || important) {
-        let text = o.n || CLASS_HU[o.c] || "";
-        if ((o.c === "gate" || o.c === "highwayentrygate")) text = (o.c === "gate" ? "Ugrókapu" : "Szupersztráda") + " → " + (o.ds ? this.c.sectorName(o.ds) : "?");
-        if (text) labels.push({ x, y: y + size / 2 + 12, text, col, pri: important ? 0 : (o.pl ? 1 : o.c === "station" || o.c === "gate" ? 2 : 3) });
+      if (o.c === "gate" || o.c === "highwayentrygate") {
+        // M8: jump gate / accelerator / superhighway names (= destination sector) at every zoom level
+        const dn = o.ds ? this.sectorName(o.ds) : null;
+        labels.push({ x, y: y + size / 2 + 12, iy: y, isz: size, gate: true, col, pri: important ? 0 : 0.5,
+                      text: dn && dn !== T("map.unknown") && dn !== "?" ? dn : T("map.gate.unknownDest") });
+      } else if ((wantLabel && lblMode !== "off") || important) {
+        const txt = o.n || this.className(o.c) || "";
+        if (txt) labels.push({ x, y: y + size / 2 + 12, text: txt, col, pri: important ? 0 : (o.pl ? 1 : o.c === "station" ? 2 : 3) });
       }
     }
-    // labels: important first, no overlaps (like the game, names thin out instead of piling up)
+    // labels: important first, no overlaps (like the game, names thin out instead of piling up);
+    // gate names are never dropped: they try below / above / right / left, then step downwards
     labels.sort((a, b) => a.pri - b.pri);
     const taken = [];
+    const hitsAny = (box) => taken.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]);
+    if (inPlayer && p && p.x !== null && p.x !== undefined) {      // the player's own label (drawn last) is reserved first
+      const [px, py] = this.toScreen(p.x, p.z);
+      g.font = `13px ${FONT}`;
+      const pw = g.measureText(T("map.you", { name: p.name || "" })).width;
+      taken.push([px - 18, py - 20, px + 24 + pw, py + 18]);
+    }
     g.font = `12px ${FONT}`;
+    this.lastLabels = [];
     for (const L of labels) {
       const w = g.measureText(L.text).width;
+      const boxAt = (lx, ly) => [lx - 3, ly - 12, lx + w + 3, ly + 4];
+      if (L.gate) {
+        const h2 = L.isz / 2;
+        const cands = [[L.x - w / 2, L.y], [L.x - w / 2, L.iy - h2 - 6], [L.x + h2 + 6, L.iy + 4], [L.x - h2 - 6 - w, L.iy + 4]];
+        let pos = cands.find(([lx, ly]) => !hitsAny(boxAt(lx, ly)));
+        for (let k = 1; !pos && k <= 6; k++) { const c = [L.x - w / 2, L.y + 16 * k]; if (!hitsAny(boxAt(...c))) pos = c; }
+        if (!pos) pos = cands[0];
+        const box = boxAt(pos[0], pos[1]);
+        taken.push(box);
+        g.fillStyle = "rgba(2,6,14,0.62)";
+        roundRect(g, box[0], box[1], box[2] - box[0], box[3] - box[1], 3); g.fill();
+        text(g, L.text, pos[0], pos[1], rgb(L.col), 12, true);
+        this.lastLabels.push({ text: L.text, x: pos[0], y: pos[1], gate: true });
+        continue;
+      }
       const box = [L.x - w / 2 - 2, L.y - 11, L.x + w / 2 + 2, L.y + 3];
-      if (L.pri > 0 && taken.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+      if (L.pri > 0 && hitsAny(box)) continue;
       taken.push(box);
       text(g, L.text, L.x - w / 2, L.y, rgb(L.col), 12, true);
+      this.lastLabels.push({ text: L.text, x: L.x - w / 2, y: L.y, gate: false });
     }
-    // player
+    // player (always on top)
     if (inPlayer && p && p.x !== null && p.x !== undefined) {
       const [px, py] = this.toScreen(p.x, p.z);
       const col = holo(th, "currentplayershipcolor");
@@ -596,10 +1038,10 @@ export class MapView {
       const mode = S.player.where ? S.player.where.mode : "pilot";
       const pobj = { c: p.class, ic: p.ic, pl: true, id: p.id, p: null };
       if (mode === "station" || mode === "aboard" || mode === "spacesuit") { g.fillStyle = rgb(col); g.beginPath(); g.arc(px, py, 6, 0, Math.PI * 2); g.fill(); }
-      else drawIcon(g, iconFor(pobj), px, py, 24 * scale, col, typeof p.yaw === "number" && this.cfg.rotate ? this.c.headingOf(p.yaw) : 0);
+      else drawIcon(g, iconFor(pobj), px, py, 24 * scale, col, typeof p.yaw === "number" && this.cfg.rotate ? this.heading(p.yaw) : 0);
       if (this.cfg.hull && p.hull !== undefined) hullBar(g, px, py - 24, 26, p.hull, p.shield, th);
-      text(g, "TE · " + (p.name || ""), px + 22, py - 6, "#ffffff", 13, true);
-      if (S.player.where && S.player.where.mode !== "pilot") text(g, this.c.whereText(S.player.where), px + 22, py + 10, "#e8eef7", 11, true);
+      text(g, T("map.you", { name: p.name || "" }), px + 22, py - 6, "#ffffff", 13, true);
+      if (S.player.where && S.player.where.mode !== "pilot") text(g, this.whereText(S.player.where), px + 22, py + 10, "#e8eef7", 11, true);
       this.hit.push({ x: px, y: py, r: 16, o: { ...p, c: p.class, n: p.name, pl: true } });
       this.dirty = true;   // pulse animation
     }
@@ -614,28 +1056,44 @@ export class MapView {
   }
 
   drawInfo(sec, sc, nOwn, nNpc, nHostile) {
+    const T = this.t;
     const res = sec && sec.res ? sec.res.map((r) => r.w).join(", ") : "";
-    const owner = sec ? this.c.factionName(sec.owner) : "–";
-    const key = [sec && sec.id, owner, nOwn, nNpc, nHostile, sc && sc.hidden, res, sc && Math.round(Date.now() / 5000)].join("|");
+    const pending = sec && sec.provisional;
+    const owner = sec && !pending ? this.factionName(sec.owner) : T("map.none");
+    const key = [sec && sec.id, sec && sec.name, pending, owner, nOwn, nNpc, nHostile, sc && sc.hidden, res, sc && Math.round(Date.now() / 5000)].join("|");
     if (key === this._infoKey) return;
     this._infoKey = key;
+    let counts = T("map.info.counts", { own: nOwn, npc: nNpc });
+    if (nHostile) counts += T("map.info.hostile", { n: nHostile });
+    if (sc && sc.hidden) counts += T("map.info.hidden", { n: sc.hidden });
+    if (this._pill) {              // compact container: one line, the full text as tooltip
+      const full = [sec ? sec.name : T("map.none"), pending ? T("map.info.pending") : owner, counts, res ? T("map.info.res", { list: res }) : ""].filter(Boolean).join(" · ");
+      this.info.title = full;
+      this.info.replaceChildren(this.mk("b", {}, sec ? sec.name : T("map.none")), " ",
+        pending ? "" : this.mk("span", { class: "dot", style: { background: factionColor(sec && sec.owner, this.S.factions) } }),
+        this.mk("span", { class: "muted" }, " " + (pending ? T("map.info.pending") : owner) + " · " + counts));
+      return;
+    }
+    this.info.title = "";
     this.info.replaceChildren(
-      el("div", { class: "mi-title" }, sec ? sec.name : "–", el("span", { class: "muted" }, sec && sec.cname && sec.cname !== sec.name ? "  " + sec.cname : "")),
-      el("div", {}, el("span", { class: "dot", style: { background: factionColor(sec && sec.owner, this.S.factions) } }), " " + owner),
-      el("div", { class: "muted" }, `saját ${nOwn} · más ${nNpc}` + (nHostile ? ` · támadó ${nHostile}` : "") + (sc && sc.hidden ? ` · nem látható ${sc.hidden}` : "")),
-      res ? el("div", { class: "muted" }, "Nyersanyag: " + res) : "",
-      sc ? "" : el("div", { class: "muted" }, "még nincs szektorkép"));
+      this.mk("div", { class: "mi-title" }, sec ? sec.name : T("map.none"), this.mk("span", { class: "muted" }, sec && sec.cname && sec.cname !== sec.name ? "  " + sec.cname : "")),
+      pending ? this.mk("div", { class: "muted" }, T("map.info.pending")) :
+        this.mk("div", {}, this.mk("span", { class: "dot", style: { background: factionColor(sec && sec.owner, this.S.factions) } }), " " + owner),
+      this.mk("div", { class: "muted" }, counts),
+      res ? this.mk("div", { class: "muted" }, T("map.info.res", { list: res })) : "",
+      sc ? "" : this.mk("div", { class: "muted" }, T("map.info.noscan")));
   }
 
   // plotted course, target line, order lines of the selected own ship
   drawLines(g, sid, objs, inPlayer) {
     const S = this.S;
+    const T = this.t;
     const p = S.player && S.player.object;
     const th = S.theme;
     const pp = inPlayer && p && p.x !== undefined && p.x !== null ? this.toScreen(p.x, p.z) : null;
     // order queue of the selected own ship (details command, refreshed while selected)
     const sel = S.selected && S.selected.kind === "obj" ? S.selected.id : null;
-    const det = sel ? S.details[sel] : null;
+    const det = sel && S.details ? S.details[sel] : null;
     if (det && det.orders && det.orders.length) {
       const o = objs.find((x) => x.id === sel) || (p && p.id === sel ? p : null);
       if (o && o.x !== undefined && o.x !== null) {
@@ -658,13 +1116,13 @@ export class MapView {
     const gd = S.player.guidance;
     if (gd && !gd.unknown) {
       const col = holo(th, "missioncolor");
-      let to = null, label = gd.n || "Kijelölt útvonal";
+      let to = null, label = gd.n || T("map.route.plotted");
       if (gd.s === String(sid) && gd.x !== undefined && gd.x !== null) to = this.toScreen(gd.x, gd.z);
       else if (gd.s) {
-        const path = route(S.links, String(sid), String(gd.s));
+        const path = route(S.links || [], String(sid), String(gd.s));
         if (path && path.length > 1) {
           const gate = objs.find((o) => (o.c === "gate" || o.c === "highwayentrygate") && o.ds === path[1]);
-          if (gate) { to = this.toScreen(gate.x, gate.z); label = "Útvonal → " + this.c.sectorName(gd.s) + ` (${path.length - 1} ugrás)`; }
+          if (gate) { to = this.toScreen(gate.x, gate.z); label = T("map.route.to", { sector: this.sectorName(gd.s), n: path.length - 1 }); }
         }
       }
       if (to) {
@@ -680,7 +1138,7 @@ export class MapView {
       const [tx, ty] = this.toScreen(tg.x, tg.z);
       g.save(); g.strokeStyle = "rgba(255,255,255,0.55)"; g.lineWidth = 1.2; g.setLineDash([3, 4]);
       g.beginPath(); g.moveTo(pp[0], pp[1]); g.lineTo(tx, ty); g.stroke(); g.restore();
-      text(g, dist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, "rgba(255,255,255,0.85)", 11, true);
+      text(g, this.fmtDist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, "rgba(255,255,255,0.85)", 11, true);
     }
   }
 
@@ -704,154 +1162,230 @@ export class MapView {
     g.strokeStyle = "rgba(220,235,255,0.85)"; g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(x0, y - 5); g.lineTo(x0, y); g.lineTo(x1, y); g.lineTo(x1, y - 5); g.stroke(); g.lineWidth = 1;
     g.font = `11px ${FONT}`;
-    const t = fmtKm(step);
+    const t = this.fmtKm(step);
     text(g, t, x0 + px / 2 - g.measureText(t).width / 2, y - 7, "rgba(220,235,255,0.9)", 11, true);
+    this.scaleRect = { l: x0, t: y - 19, r: x1, b: y + 1 };
   }
 
+  // mini galaxy (bottom left): drawn from whatever is known - never absent because a slow channel lags
   drawMini(g, sid) {
     const S = this.S;
-    const cur = sid ? S.sectors.get(String(sid)) : null;
-    if (!cur) return;
-    const W = 210, H = 150, X = 12, Y = this.h - H - 12;
+    const geo = this.geo();
+    const cur = this.sectorRec(sid);
+    const cg = this.sectorGeo(sid);
+    this.miniDrawn = false;
+    const mr = this.miniRect;
+    if (!cur || !mr) return;
+    const W = mr.r - mr.l, H = mr.b - mr.t, X = mr.l, Y = mr.t;
     g.save();
     roundRect(g, X, Y, W, H, 8);
     g.fillStyle = "rgba(6,12,24,0.86)"; g.fill(); g.strokeStyle = "rgba(120,170,230,0.25)"; g.stroke();
     g.clip();
     const sc = (Math.min(W, H) / 2) / (HEX * 3.2);
-    const tx = (x) => X + W / 2 + (x - cur.gx) * sc, ty = (z) => Y + H / 2 - (z - cur.gz) * sc;
-    for (const l of S.links) {
-      const a = S.sectors.get(l.a), b = S.sectors.get(l.b);
-      if (!a || !b) continue;
-      if (Math.hypot(a.gx - cur.gx, a.gz - cur.gz) > HEX * 6 && Math.hypot(b.gx - cur.gx, b.gz - cur.gz) > HEX * 6) continue;
-      g.strokeStyle = l.kind === "hw" ? rgb(holo(S.theme, "superhighwaycolor"), 0.7) : "rgba(255,255,255,0.4)";
-      g.beginPath(); g.moveTo(tx(a.gx), ty(a.gz)); g.lineTo(tx(b.gx), ty(b.gz)); g.stroke();
+    const ox = cg ? cg.x : 0, oz = cg ? cg.z : 0;
+    const tx = (x) => X + W / 2 + (x - ox) * sc, ty = (z) => Y + H / 2 - (z - oz) * sc;
+    const inView = (x, z, m = 30) => { const a = tx(x), b = ty(z); return a > X - m && a < X + W + m && b > Y - m && b < Y + H + m; };
+    for (const c of geo.clusters.values()) {
+      if (!inView(c.x, c.z, c.r * sc)) continue;
+      g.fillStyle = "rgba(0,0,0,0.6)"; hexPath(g, tx(c.x), ty(c.z), c.r * sc); g.fill();
     }
-    const ps = S.player && S.player.sector ? S.player.sector.id : null;
-    for (const s of S.sectors.values()) {
-      const x = tx(s.gx), y = ty(s.gz);
-      if (x < X - 30 || x > X + W + 30 || y < Y - 30 || y > Y + H + 30) continue;
-      const r = (s.multi ? HEX / 2.4 : HEX * 0.92) * sc;
-      g.fillStyle = factionColor(s.owner, S.factions); g.globalAlpha = 0.35; hexPath(g, x, y, r); g.fill(); g.globalAlpha = 1;
-      if (s.id === String(sid)) { g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, r); g.stroke(); g.lineWidth = 1; }
-      if (s.id === ps) { g.fillStyle = "#ffffff"; g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
+    for (const l of S.links || []) {
+      const a = geo.sectors.get(l.a), b = geo.sectors.get(l.b);
+      if (!a || !b) continue;
+      if (Math.hypot(a.x - ox, a.z - oz) > HEX * 6 && Math.hypot(b.x - ox, b.z - oz) > HEX * 6) continue;
+      g.strokeStyle = l.kind === "hw" ? rgb(holo(S.theme, "superhighwaycolor"), 0.7) : "rgba(255,255,255,0.4)";
+      g.beginPath(); g.moveTo(tx(a.x), ty(a.z)); g.lineTo(tx(b.x), ty(b.z)); g.stroke();
+    }
+    const ps = S.player && S.player.sector ? String(S.player.sector.id) : null;
+    for (const [id, gs] of geo.sectors) {
+      if (!inView(gs.x, gs.z)) continue;
+      const s = S.sectors && S.sectors.get(id);
+      const x = tx(gs.x), y = ty(gs.z), r = gs.r * sc * 0.94;
+      g.fillStyle = factionColor(s && s.owner, S.factions); g.globalAlpha = 0.35; hexPath(g, x, y, r); g.fill(); g.globalAlpha = 1;
+      if (id === String(sid)) { g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, r); g.stroke(); g.lineWidth = 1; }
+      if (id === ps) { g.fillStyle = "#ffffff"; g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
+    }
+    if (cg && cg.estimated && !cg.unplaced) {         // a sector the galaxy data has not reported yet (M6)
+      const x = tx(cg.x), y = ty(cg.z);
+      g.save(); g.setLineDash([3, 3]); g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, cg.r * sc); g.stroke(); g.restore();
+      if (String(sid) === ps) { g.fillStyle = "#ffffff"; g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
     }
     g.restore();
     text(g, cur.name, X + 8, Y + 15, "rgba(220,232,245,0.9)", 11, true);
+    this.miniDrawn = true;
   }
 
   // ---------------------------------------------------------------- galaxy view
   drawGalaxy(g, t) {
     const S = this.S;
-    this.title.textContent = "Galaxis" + (S.sectors.size ? ` · ${S.sectors.size} felfedezett szektor` : "");
+    const T = this.t;
+    const geo = this.geo();
+    const nsec = geo.sectors.size;
+    this.setTitle(nsec ? T("map.title.galaxyCount", { n: nsec }) : T("map.title.galaxy"));
     this.drawBackground(g);
     const v = this.gview;
     const own = new Map(), ownSt = new Map();
-    for (const e of S.property.values()) {
+    for (const e of (S.property && S.property.values()) || []) {
       if (e.k === "station") ownSt.set(e.s, (ownSt.get(e.s) || 0) + 1); else own.set(e.s, (own.get(e.s) || 0) + 1);
     }
-    // links: jump gate connections (legend: plain line), superhighways (superhighwaycolor)
-    for (const l of S.links) {
-      const a = S.sectors.get(l.a), b = S.sectors.get(l.b);
+    const sectorOf = (id) => S.sectors && S.sectors.get(id);
+    const onScreen = (x, y, r) => !(x < -r || y < -r || x > this.w + r || y > this.h + r);
+    // 1. cluster bodies: black (the corners no sector occupies stay black, like the game)
+    for (const c of geo.clusters.values()) {
+      const [x, y] = this.toScreen(c.x, c.z), r = c.r * v.scale;
+      if (!onScreen(x, y, r)) continue;
+      g.fillStyle = "rgba(0,0,0,0.88)"; hexPath(g, x, y, r); g.fill();
+    }
+    // 2. sector hexagons in the owner's colour
+    this.ghit = [];
+    for (const [id, gs] of geo.sectors) {
+      const s = sectorOf(id);
+      if (!s) continue;
+      const [x, y] = this.toScreen(gs.x, gs.z), r = gs.r * v.scale;
+      if (!onScreen(x, y, r)) continue;
+      const fc = factionColor(s.owner, S.factions);
+      g.fillStyle = fc; g.globalAlpha = 0.24; hexPath(g, x, y, r); g.fill();
+      g.globalAlpha = 0.55; g.strokeStyle = fc; g.lineWidth = 1; hexPath(g, x, y, r); g.stroke(); g.globalAlpha = 1;
+      this.ghit.push({ x, y, r, s, gx: gs.x, gz: gs.z, wr: gs.r });
+    }
+    // 3. links: jump gate connections (legend: plain line), superhighways (superhighwaycolor)
+    for (const l of S.links || []) {
+      const a = geo.sectors.get(l.a), b = geo.sectors.get(l.b);
       if (!a || !b) continue;
-      const [x1, y1] = this.toScreen(a.gx, a.gz), [x2, y2] = this.toScreen(b.gx, b.gz);
+      const [x1, y1] = this.toScreen(a.x, a.z), [x2, y2] = this.toScreen(b.x, b.z);
       g.strokeStyle = l.kind === "hw" ? rgb(holo(S.theme, "superhighwaycolor"), 0.85) : "rgba(235,242,255,0.55)";
       g.lineWidth = l.kind === "hw" ? 2.5 : 1.4;
       g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
     }
     g.lineWidth = 1;
     for (const st of S.stubs || []) {
-      const a = S.sectors.get(st.s);
+      const a = geo.sectors.get(st.s);
       if (!a) continue;
       const d = Math.hypot(st.x, st.z) || 1;
-      const ex = a.gx + st.x / d * HEX * 1.15, ez = a.gz + st.z / d * HEX * 1.15;
-      const [x1, y1] = this.toScreen(a.gx, a.gz), [x2, y2] = this.toScreen(ex, ez);
+      const ex = a.x + st.x / d * a.r * 1.1, ez = a.z + st.z / d * a.r * 1.1;
+      const [x1, y1] = this.toScreen(a.x, a.z), [x2, y2] = this.toScreen(ex, ez);
       g.strokeStyle = "rgba(235,242,255,0.35)"; g.setLineDash([2, 4]);
       g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.setLineDash([]);
       text(g, "?", x2 - 3, y2 + 4, "rgba(235,242,255,0.8)", 13, true);
     }
-    // plotted route
-    const ps = S.player && S.player.sector ? S.player.sector.id : null;
+    // 4. plotted route
+    const ps = S.player && S.player.sector ? String(S.player.sector.id) : null;
     const gd = S.player && S.player.guidance;
     if (this.cfg.lines && gd && gd.s && ps) {
-      const path = route(S.links, ps, String(gd.s));
+      const path = route(S.links || [], ps, String(gd.s));
       if (path && path.length > 1) {
         g.save(); g.strokeStyle = rgb(holo(S.theme, "missioncolor"), 0.95); g.lineWidth = 3.5; g.setLineDash([12, 7]);
         g.beginPath();
-        path.forEach((sid, i) => { const s = S.sectors.get(sid); const [x, y] = this.toScreen(s.gx, s.gz); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+        let first = true;
+        for (const sid of path) {
+          const s = this.sectorGeo(sid);
+          if (!s) continue;
+          const [x, y] = this.toScreen(s.x, s.z);
+          if (first) g.moveTo(x, y); else g.lineTo(x, y);
+          first = false;
+        }
         g.stroke(); g.restore();
       }
     }
-    this.ghit = [];
-    const labelOk = v.scale * HEX > 26;
-    for (const s of S.sectors.values()) {
-      const [x, y] = this.toScreen(s.gx, s.gz);
-      const r = (s.multi ? HEX / 2.4 : HEX * 0.92) * v.scale;
-      if (x < -r || y < -r || x > this.w + r || y > this.h + r) continue;
-      const fc = factionColor(s.owner, S.factions);
-      g.fillStyle = fc; g.globalAlpha = 0.22; hexPath(g, x, y, r); g.fill();
-      g.globalAlpha = 0.75; g.strokeStyle = fc; g.lineWidth = 1.5; hexPath(g, x, y, r * 0.97); g.stroke(); g.globalAlpha = 1; g.lineWidth = 1;
-      this.ghit.push({ x, y, r, s });
+    // 5. system edge: the cluster outline in the owner's colour (majority of its known sectors)
+    for (const c of geo.clusters.values()) {
+      const [x, y] = this.toScreen(c.x, c.z), r = c.r * v.scale;
+      if (!onScreen(x, y, r)) continue;
+      const cnt = new Map();
+      for (const [id, gs] of geo.sectors) if (gs.cid === c.id) { const s = sectorOf(id); const o = s ? s.owner || "" : ""; cnt.set(o, (cnt.get(o) || 0) + 1); }
+      let owner = "", best = -1;
+      for (const [o, n] of cnt) if (n > best) { best = n; owner = o; }
+      g.strokeStyle = factionColor(owner || null, S.factions); g.lineWidth = 2.2; g.globalAlpha = 0.95;
+      hexPath(g, x, y, r); g.stroke(); g.globalAlpha = 1; g.lineWidth = 1;
+    }
+    // 6. markers and names, all inside their own sector hexagon
+    const pc = holo(S.theme, "playercolor");
+    for (const h of this.ghit) {
+      const { x, y, r, s } = h;
+      const spot = sectorMarkerSpots(r);
       const n = own.get(s.id) || 0, ns = ownSt.get(s.id) || 0;
-      if ((n || ns) && r > 10) {
-        const pc = holo(S.theme, "playercolor");
-        drawIcon(g, "ship_s_fight_01", x + r * 0.42, y - r * 0.42, Math.max(10, Math.min(18, r / 3)), pc);
-        if (labelOk) text(g, String(n + ns), x + r * 0.42 + 9, y - r * 0.42 + 4, rgb(pc), 11, true);
+      if ((n || ns) && r > 18) {
+        drawIcon(g, "ship_s_fight_01", x + spot.count.x, y + spot.count.y, spot.count.size, pc);
+        if (r > 22) text(g, String(n + ns), x + spot.count.textX, y + spot.count.textY, rgb(pc), 11, true);
       }
       if (s.id === ps) {
         const ph = (performance.now() % 2000) / 2000;
-        g.strokeStyle = "#ffffff"; g.lineWidth = 2.5; hexPath(g, x, y, r * (1 + 0.06 * Math.sin(ph * Math.PI * 2))); g.stroke(); g.lineWidth = 1;
-        drawIcon(g, iconFor({ c: S.player.object && S.player.object.class, ic: S.player.object && S.player.object.ic }), x, y, 20, holo(S.theme, "currentplayershipcolor"));
+        g.strokeStyle = "#ffffff"; g.lineWidth = 2.5; hexPath(g, x, y, r * (0.95 + 0.04 * Math.sin(ph * Math.PI * 2))); g.stroke(); g.lineWidth = 1;
+        drawIcon(g, iconFor({ c: S.player.object && S.player.object.class, ic: S.player.object && S.player.object.ic }), x, y, spot.player.size, holo(S.theme, "currentplayershipcolor"));
         this.dirty = true;
       }
-      if (this.viewSector === s.id) { g.strokeStyle = "rgba(255,255,255,0.8)"; g.setLineDash([4, 3]); hexPath(g, x, y, r * 1.06); g.stroke(); g.setLineDash([]); }
+      if (this.viewSector === s.id) { g.strokeStyle = "rgba(255,255,255,0.8)"; g.setLineDash([4, 3]); hexPath(g, x, y, r * 0.88); g.stroke(); g.setLineDash([]); }
       const sel = S.selected;
-      if (sel && sel.kind === "sector" && sel.id === s.id) brackets(g, x, y, r * 0.9, "#ffffff");
-      if (labelOk && this.cfg.labels !== "off") {
-        const fs = Math.max(10, Math.min(14, r / 5));
+      if (sel && sel.kind === "sector" && sel.id === s.id) { g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, r * 0.9); g.stroke(); g.lineWidth = 1; }
+      if (this.cfg.labels !== "off" && r > 20) {
+        // the sector's name at the top centre of its hexagon, shrunk to fit the top edge
+        let fs = spot.label.fs;
+        const maxW = spot.label.maxW;
         g.font = `${fs}px ${FONT}`;
-        const tw = g.measureText(s.name).width;
-        text(g, s.name, x - tw / 2, y + r * 0.62, s.id === ps ? "#ffffff" : "rgba(225,234,246,0.9)", fs, true);
+        let tw = g.measureText(s.name).width;
+        while (tw > maxW && fs > 9) { fs -= 0.5; g.font = `${fs}px ${FONT}`; tw = g.measureText(s.name).width; }
+        let name = s.name;
+        if (tw > maxW) { while (name.length > 2 && g.measureText(name + "…").width > maxW) name = name.slice(0, -1); name += "…"; tw = g.measureText(name).width; }
+        text(g, name, x - tw / 2, y + spot.label.y, s.id === ps ? "#ffffff" : "rgba(225,234,246,0.92)", fs, true);
       }
     }
-    const key = ["g", S.sectors.size, S.links.length].join("|");
+    // the player's sector before the galaxy message reports it (M6): estimated, dashed
+    if (ps && !geo.sectors.has(ps)) {
+      const est = this.sectorGeo(ps);
+      if (est && !est.unplaced) {
+        const [x, y] = this.toScreen(est.x, est.z), r = est.r * v.scale;
+        g.save(); g.setLineDash([5, 4]); g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, r); g.stroke(); g.restore();
+        drawIcon(g, iconFor({ c: S.player.object && S.player.object.class, ic: S.player.object && S.player.object.ic }), x, y, Math.max(10, Math.min(20, r * 0.5)), holo(S.theme, "currentplayershipcolor"));
+        if (r > 20) { const nm = S.player.sector.name || "?"; g.font = `12px ${FONT}`; text(g, nm, x - g.measureText(nm).width / 2, y - r * 0.866 + 16, "#ffffff", 12, true); }
+        this.dirty = true;
+      }
+    }
+    const nGate = (S.links || []).filter((l) => l.kind === "gate").length, nHw = (S.links || []).filter((l) => l.kind === "hw").length;
+    const key = ["g", nsec, nGate, nHw, this.t("map.locale")].join("|");
     if (key !== this._infoKey) {
       this._infoKey = key;
-      this.info.replaceChildren(el("div", { class: "mi-title" }, "Galaxis"),
-        el("div", {}, `${S.sectors.size} szektor · ${S.links.filter((l) => l.kind === "gate").length} kapu · ${S.links.filter((l) => l.kind === "hw").length} sztráda`),
-        el("div", { class: "muted" }, S.liveGalaxy && S.liveGalaxy.length ? "csak a felfedezett szektorok (a játék szerint)" : "még nincs galaxisadat a játéktól"),
-        el("div", { class: "muted" }, "dupla katt: szektornézet"));
+      if (this._pill) {
+        this.info.title = T("map.galaxy.known");
+        this.info.replaceChildren(this.mk("b", {}, T("map.title.galaxy")), this.mk("span", { class: "muted" }, " · " + T("map.galaxy.info", { s: nsec, g: nGate, h: nHw })));
+        return;
+      }
+      this.info.title = "";
+      this.info.replaceChildren(this.mk("div", { class: "mi-title" }, T("map.title.galaxy")),
+        this.mk("div", {}, T("map.galaxy.info", { s: nsec, g: nGate, h: nHw })),
+        this.mk("div", { class: "muted" }, S.liveGalaxy && S.liveGalaxy.length ? T("map.galaxy.known") : T("map.galaxy.none")),
+        this.mk("div", { class: "muted" }, T("map.galaxy.dbl")));
     }
   }
 
   pickSector(sx, sy) {
-    let best = null, bd = Infinity;
-    for (const h of this.ghit || []) {
-      const d = Math.hypot(h.x - sx, h.y - sy);
-      if (d < h.r && d < bd) { bd = d; best = h.s; }
-    }
-    return best;
+    const [wx, wz] = this.toWorld(sx, sy);
+    const hs = this.ghit || [];
+    for (let i = hs.length - 1; i >= 0; i--) if (insideHex(wx, wz, hs[i].gx, hs[i].gz, hs[i].wr)) return hs[i].s;
+    return null;
   }
 
+  // topmost drawn object first (the hit list is in drawing order, the player marker last)
   pick(sx, sy) {
-    let best = null, bd = Infinity;
-    for (const h of this.hit || []) {
-      const d = Math.hypot(h.x - sx, h.y - sy);
-      if (d < Math.max(10, h.r) && d < bd) { bd = d; best = h.o; }
+    const hs = this.hit || [];
+    for (let i = hs.length - 1; i >= 0; i--) {
+      const h = hs[i];
+      if (Math.hypot(h.x - sx, h.y - sy) < Math.max(10, h.r)) return h.o;
     }
-    return best;
+    return null;
   }
 
   onHover(e) {
+    const T = this.t;
     const rect = this.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
     let o = null, label = "";
     if (this.mode === "galaxy") {
       const s = this.pickSector(sx, sy);
-      if (s) { o = { id: "s" + s.id }; label = s.name + " · " + this.c.factionName(s.owner); }
+      if (s) { o = { id: "s" + s.id }; label = s.name + " · " + this.factionName(s.owner); }
     } else {
       o = this.pick(sx, sy);
-      if (o) label = (o.n || CLASS_HU[o.c] || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? " · saját" : o.o ? " · " + this.c.factionName(o.o) : "") +
-        (o.hull !== undefined && o.hull !== null ? ` · burkolat ${num(o.hull)}%` : "");
+      if (o) label = (o.n || this.className(o.c) || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? T("map.tip.own") : o.o ? " · " + this.factionName(o.o) : "") +
+        (o.hull !== undefined && o.hull !== null ? T("map.tip.hull", { n: this.fmtNum(o.hull) }) : "");
     }
     const id = o ? o.id : null;
     if (id !== (this.hover && this.hover.id)) { this.hover = o; this.dirty = true; }
@@ -866,20 +1400,15 @@ export class MapView {
     this.lastInteract = performance.now();
     if (this.mode === "galaxy") {
       const s = this.pickSector(sx, sy);
-      if (s) this.c.select({ kind: "sector", id: s.id, from: "galaxy" });
+      if (s) this.select({ kind: "sector", id: s.id, from: "galaxy" });
       return;
     }
     const best = this.pick(sx, sy);
-    if (best) this.c.select({ kind: "obj", id: best.id, from: "map", obj: best, sid: this.currentSid() });
+    if (best) this.select({ kind: "obj", id: best.id, from: "map", obj: best, sid: this.currentSid() });
   }
 }
 
 // ---------------------------------------------------------------- drawing helpers
-function fmtKm(m) {
-  const a = Math.abs(m);
-  if (a >= 1000) return (m / 1000).toLocaleString("hu-HU", { maximumFractionDigits: a >= 10000 ? 0 : 1 }) + " km";
-  return Math.round(m) + " m";
-}
 function text(g, s, x, y, color, size = 11, shadow = false) {
   g.font = `${size}px ${FONT}`;
   if (shadow) { g.fillStyle = "rgba(0,0,0,0.85)"; g.fillText(s, x + 1, y + 1); }
