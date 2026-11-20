@@ -92,6 +92,35 @@ Játék nélkül: `sim.cmd` (a szimulátor ugyanazt küldi, mint a mod). Tesztek
 
 **Csak a felfedezett dolgok jutnak ki a játékból** – a híd szűr, nem a böngésző (részletek: `API-REFERENCE.md`).
 
+## Watcher: automatic start with the game (Windows)
+
+`watch_x4.ps1` runs in the background (no window) and checks every 3 s whether the game (`X4.exe` in the game
+root, two folders above this folder) is running. When the game starts it:
+
+1. starts the companion server hidden, unless something already listens on the port (output:
+   `logs\watcher-server.log`), and waits until it answers;
+2. opens the companion window, unless one is already open (a window whose title starts with "X4 Companion",
+   or a browser started with `--app=http://127.0.0.1:<port>`).
+
+When the game exits, server and window stay as they are. A window you close while the game runs is not reopened;
+it comes back at the next game start. Everything is started detached, so it keeps running if the watcher stops.
+
+- **Install** (autostart at logon + start now): `powershell -ExecutionPolicy Bypass -File watcher_install.ps1`
+  – creates the shortcut "X4 Companion Watcher" in your Startup folder (runs
+  `conhost.exe --headless powershell.exe ... -File watch_x4.ps1`: no console window). No admin rights, no system
+  settings changed.
+- **Uninstall:** `powershell -ExecutionPolicy Bypass -File watcher_uninstall.ps1` – removes the shortcut and stops
+  the watcher (server and window are left alone).
+- **Config** (optional, per machine, git-ignored): `state\watcher.json`, e.g.
+  `{"port": 8788, "browserExe": "C:\\...\\brave.exe", "windowPosition": "-1920,126", "windowSize": "1920,1040",
+  "uvCacheDir": "D:\\X4-tools\\uv-cache"}`. Without `browserExe` the default browser opens the URL as a normal
+  tab; with it, an app window (`--app=`) at the given position/size. Other keys: `windowTitle`, `uvExe`,
+  `serverStartTimeoutSec` (60), `browserArgs`/`serverCommand` (testing).
+- **Log:** `logs\watcher.log` (rotated at 1 MB). Check without changing anything:
+  `powershell -ExecutionPolicy Bypass -File watch_x4.ps1 -Once -DryRun`.
+- **Tests:** `powershell -ExecutionPolicy Bypass -File tests\test_watcher.ps1` (fake game, port 8796, stub server
+  and browser under `D:\X4-backups\work\watcher-test\`; does not touch the real game, server or window).
+
 ## Ismert korlátok
 
 - Az ismertségi szabály a vanilla menük saját szűrőit követi (`IsKnownToPlayer`, `isknown`, `CanViewLiveData`);
