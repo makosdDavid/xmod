@@ -205,6 +205,10 @@ function Invoke-GameStarted {
         else { $srv = "server did NOT answer on port $Port (timeout ${startTimeout}s or it exited) - see $serverLog" }
     }
     # --- window ---
+    # Optional: another tool (e.g. a cockpit mode that uses every monitor) can ask us not to open the window
+    # by creating the file named in the 'skipWindowFlag' setting. The server is still started.
+    $skip = [string](Get-Cfg 'skipWindowFlag' '')
+    if ($skip -and (Test-Path -LiteralPath $skip)) { Write-Log "game running, $srv, skip flag $skip present - not opening the window"; return }
     $win = Find-CompanionWindow
     if ($win) { $wtxt = "window present ($win)" }
     elseif ($DryRun) { $wtxt = 'DRY-RUN: would open window: ' + (Get-BrowserCommandLine) }
