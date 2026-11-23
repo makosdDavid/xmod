@@ -4,6 +4,11 @@ Tests for watch_x4.ps1 with a FAKE game, port, server and browser - the real gam
   fake server   : a python http listener on the test port; every start appends its pid to starts.txt
   fake browser  : a windowless-looking exe (fully transparent, off-screen, no taskbar button, never activated)
                   whose visible top-level window carries the test title; every start appends to marker.txt
+  fake telemetry: <work>\th\telem\X4TelemTest.exe (a sleeping console exe, the "configured" server) plus a copy of it in
+                  th\telemcopy (same file name, other folder: must never be stopped); faketelem.exe provides the port
+                  (minimal WebSocket server on a free port, push/silent) and a test pipe (busy/free), switched via th\mode.txt;
+                  it logs every TCP accept / WebSocket handshake to th\events.txt. The real telemetry server, its port
+                  8080 and pipe x4telemetry are never touched (every test config names the fake port and pipe).
 Every process the test starts (directly or through the watcher) is stopped by PID at the end.
 Usage:  powershell -ExecutionPolicy Bypass -File tests\test_watcher.ps1 [-Work D:\X4-backups\work\watcher-test] [-Port 8796]
 #>
@@ -40,15 +45,16 @@ function Test-Port {
 }
 function Alive([int]$id) { [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
 
-# Safety: never stop the real game, a Brave process or the live companion server (owner of 127.0.0.1:8788).
+# Safety: never stop the real game, a Brave process, the real telemetry server or the live companion server (owner of 127.0.0.1:8788).
 $realGame = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent (Split-Path -Parent $root)) 'X4.exe'))
+$realTelemetry = 'D:\X4Telemetry_Server\X4Telemetry_Server.exe'
 $liveServer = @(netstat -ano | Select-String -Pattern '127\.0\.0\.1:8788\s+\S+\s+LISTENING\s+(\d+)' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
 function Stop-Pid([int]$id) {
     if (-not $id -or $id -eq $PID) { return }
     $p = Get-Process -Id $id -ErrorAction SilentlyContinue
     if (-not $p) { return }
     $path = $null; try { $path = $p.Path } catch { }
-    if ($p.ProcessName -eq 'brave' -or $liveServer -contains $id -or ($path -and $path -ieq $realGame)) {
+    if ($p.ProcessName -eq 'brave' -or $liveServer -contains $id -or ($path -and ($path -ieq $realGame -or $path -ieq $realTelemetry))) {
         Write-Host "refusing to stop protected pid $id ($($p.ProcessName))"; return }
     try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { }   # may have exited meanwhile
 }
@@ -67,6 +73,62 @@ function Kill-Servers {
     if (Test-Path $starts) { Get-Content $starts | Where-Object { $_ } | ForEach-Object { Stop-Pid ([int]$_) } }
     if (Test-Path $wlog) { Select-String -Path $wlog -Pattern 'server launched \(pid (\d+)\)' | ForEach-Object { Stop-Pid ([int]$_.Matches[0].Groups[1].Value) } }
 }
+
+# ---- telemetry health-check helpers (fake server in $th; never the real one) ----
+$th = "$run\th"
+$telemExe = "$th\telem\X4TelemTest.exe"; $telemCopy = "$th\telemcopy\X4TelemTest.exe"; $gameT = "$th\gameT\X4.exe"
+$tCtl = "$th\mode.txt"; $tEv = "$th\events.txt"
+$tPipe = 'x4telemtest_' + (Split-Path -Leaf $run)
+$thMutex = 'Local\X4CompanionWatcherTestTH'
+function Get-FreePort { $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); $p = $l.LocalEndpoint.Port; $l.Stop(); $p }
+function Test-TPort([int]$p) {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $ar = $c.BeginConnect('127.0.0.1', $p, $null, $null); if ($ar.AsyncWaitHandle.WaitOne(500)) { $c.EndConnect($ar); $true } else { $false } }
+    catch { $false } finally { $c.Close() }
+}
+function TelemPids {   # processes running exactly the configured fake telemetry exe
+    @(Get-Process -Name X4TelemTest -ErrorAction SilentlyContinue | Where-Object { $p = $null; try { $p = $_.Path } catch { }; $p -ieq $telemExe } | ForEach-Object { $_.Id })
+}
+function EvCount([string]$kind) {   # lines in the fake's event file ('accept' = any TCP connect, 'ws' = WebSocket handshake)
+    if (-not (Test-Path $tEv)) { return 0 }
+    $fs = New-Object IO.FileStream($tEv, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { $txt = (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
+    @($txt -split "`n" | Where-Object { $_.Trim() -eq $kind }).Count
+}
+function Write-Mode([string]$m) {
+    for ($i = 0; $i -lt 40; $i++) { try { [IO.File]::WriteAllText($tCtl, $m); return } catch { Start-Sleep -Milliseconds 50 } }
+    throw "cannot write $tCtl"
+}
+function Set-Mode([string]$m) {   # '<push|silent> <busy|free>'; waits until the pipe shows the wanted state
+    Write-Mode $m
+    $want = if ($m -like '*busy*') { 'busy' } else { 'free' }
+    [void](Wait-Until { [X4TestPipe]::State($tPipe) -eq $want } 10)
+    Start-Sleep -Milliseconds 300
+}
+function New-THRun([string]$name, [hashtable]$telem) {   # own state + log dir per watcher run
+    $d = "$th\$name"; New-Item -ItemType Directory -Force "$d\state", "$d\logs" | Out-Null
+    $c = @{ port = $Port; windowTitle = $title; serverStartTimeoutSec = 20; browserExe = "$run\bin\stubwin.exe"
+            browserArgs = @($marker, $title, '--app={url}'); serverCommand = @($py, "$run\bin\stub_server.py", "$Port", $starts)
+            startCockpitHelper = $false }
+    foreach ($k in $telem.Keys) { $c[$k] = $telem[$k] }
+    $c | ConvertTo-Json | Set-Content -Encoding UTF8 "$d\state\watcher.json"
+    return $d
+}
+function Start-THWatcher([string]$dir, [string]$extra = '') {
+    Start-Hidden $psExe ("-NoProfile -ExecutionPolicy Bypass -File `"$watcher`" -GameExe `"$gameT`" -Port $Port " +
+        "-StateDir `"$dir\state`" -LogDir `"$dir\logs`" -MutexName $thMutex -PollSeconds 1 $extra")
+}
+function THLog([string]$dir, [string]$text) { $f = "$dir\logs\watcher.log"; if (Test-Path $f) { @(Select-String -Path $f -SimpleMatch $text).Count } else { 0 } }
+function THLogRx([string]$dir, [string]$rx) { $f = "$dir\logs\watcher.log"; if (Test-Path $f) { @(Select-String -Path $f -Pattern $rx).Count } else { 0 } }
+function THLogInOrder([string]$dir, [string[]]$texts) {   # first occurrences appear in this order
+    $lines = @(Get-Content "$dir\logs\watcher.log"); $i = -1
+    foreach ($t in $texts) {
+        $j = -1; for ($k = $i + 1; $k -lt $lines.Count; $k++) { if ($lines[$k].Contains($t)) { $j = $k; break } }
+        if ($j -lt 0) { return $false }; $i = $j
+    }
+    return $true
+}
+function Stop-THWatcher($w) { Stop-Pid $w.Id; [void](Wait-Until { -not (Alive $w.Id) } 10) }
 
 if (Test-Port) { throw "test port $Port is already in use - pick another with -Port" }
 
@@ -107,6 +169,87 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
    browserArgs = @($marker, $title, '--app={url}'); serverCommand = @($py, "$run\bin\stub_server.py", "$Port", $starts)
    startTelemetryServer = $false; startCockpitHelper = $false   # never start the REAL telemetry server / cockpit helper
 } | ConvertTo-Json | Set-Content -Encoding UTF8 "$run\state\watcher.json"
+
+# fake telemetry server: the exe the watcher manages (a console program like the real one), a same-name copy elsewhere,
+# and faketelem.exe for port + pipe (both switchable through the mode file)
+'telem', 'telemcopy', 'gameT' | ForEach-Object { New-Item -ItemType Directory -Force (Join-Path $th $_) | Out-Null }
+Add-Type -OutputType ConsoleApplication -OutputAssembly $telemExe -TypeDefinition @'
+public static class FakeTelemetryExe { public static void Main() { System.Threading.Thread.Sleep(System.Threading.Timeout.Infinite); } }
+'@
+Copy-Item $telemExe $telemCopy
+Copy-Item $gameA $gameT
+Add-Type -OutputType WindowsApplication -OutputAssembly "$run\bin\faketelem.exe" -TypeDefinition @'
+using System; using System.IO; using System.Net; using System.Net.Sockets; using System.IO.Pipes;
+using System.Text; using System.Threading; using System.Security.Cryptography;
+// args: port pipeName modeFile eventFile. mode file: "push|silent busy|free" (re-read every 50 ms)
+public static class FakeTelemetry {
+    static string ctl, events; static volatile string mode = "push busy"; static readonly object evLock = new object();
+    static void Ev(string s) {
+        lock (evLock) { try { using (var f = new FileStream(events, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) {
+            var b = Encoding.ASCII.GetBytes(s + "\n"); f.Write(b, 0, b.Length); } } catch { } }
+    }
+    static bool Has(string w) { return (" " + mode + " ").Contains(" " + w + " "); }
+    static void ReadMode() {
+        try { using (var f = new FileStream(ctl, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+              using (var r = new StreamReader(f)) { var m = r.ReadToEnd().Trim(); if (m.Length > 0) mode = m; } } catch { }
+    }
+    public static void Main(string[] a) {
+        int port = int.Parse(a[0]); string pipe = a[1]; ctl = a[2]; events = a[3];
+        ReadMode();
+        new Thread(() => { while (true) { ReadMode(); Thread.Sleep(50); } }) { IsBackground = true }.Start();
+        var l = new TcpListener(IPAddress.Loopback, port); l.Start();
+        new Thread(() => { while (true) {
+            TcpClient c; try { c = l.AcceptTcpClient(); } catch { Thread.Sleep(100); continue; }
+            Ev("accept"); new Thread(() => Serve(c)) { IsBackground = true }.Start(); } }) { IsBackground = true }.Start();
+        Ev("ready");
+        PipeLoop(pipe);
+    }
+    static void Serve(TcpClient c) {   // minimal WebSocket server: handshake, then a text frame every 100 ms while "push"
+        try {
+            var s = c.GetStream(); s.ReadTimeout = 5000;
+            var req = new StringBuilder(); var buf = new byte[4096];
+            while (!req.ToString().Contains("\r\n\r\n")) { int n = s.Read(buf, 0, buf.Length); if (n <= 0) return; req.Append(Encoding.ASCII.GetString(buf, 0, n)); }
+            string key = null;
+            foreach (var line in req.ToString().Split(new[] { "\r\n" }, StringSplitOptions.None))
+                if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase)) key = line.Substring(18).Trim();
+            if (key == null) return;
+            string acc; using (var sha = SHA1.Create()) acc = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+            var resp = Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + acc + "\r\n\r\n");
+            s.Write(resp, 0, resp.Length);
+            Ev("ws");
+            int i = 0;
+            while (true) {
+                if (c.Client.Poll(0, SelectMode.SelectRead)) { if (c.Client.Available == 0) return; s.Read(buf, 0, buf.Length); }   // gone / drain
+                if (Has("push")) { var p = Encoding.ASCII.GetBytes("{\"n\":" + (i++) + "}"); var fr = new byte[2 + p.Length]; fr[0] = 0x81; fr[1] = (byte)p.Length;
+                                   Array.Copy(p, 0, fr, 2, p.Length); s.Write(fr, 0, fr.Length); }
+                Thread.Sleep(100);
+            }
+        } catch { } finally { try { c.Close(); } catch { } }
+    }
+    static void PipeLoop(string pipe) {   // one instance; "busy" = our own client holds it, "free" = waiting for a client
+        while (true) {
+            NamedPipeServerStream s = null; NamedPipeClientStream c = null;
+            try {
+                s = new NamedPipeServerStream(pipe, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.None);
+                while (!Has("busy")) Thread.Sleep(50);
+                c = new NamedPipeClientStream(".", pipe, PipeDirection.InOut); c.Connect(5000); s.WaitForConnection();
+                while (Has("busy")) Thread.Sleep(50);
+            } catch (Exception e) { Ev("pipe-error " + e.Message.Replace("\r", " ").Replace("\n", " ")); Thread.Sleep(200); }
+            finally { if (c != null) c.Dispose(); if (s != null) s.Dispose(); }
+        }
+    }
+}
+'@
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class X4TestPipe {   // same probe as the watcher's X4WatchPipe (WaitNamedPipe never connects)
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool WaitNamedPipe(string name, uint timeoutMs);
+    public static string State(string pipeName) {
+        if (WaitNamedPipe(@"\\.\pipe\" + pipeName, 1)) return "free";
+        return Marshal.GetLastWin32Error() == 2 ? "none" : "busy";
+    }
+}
+'@
 
 $job = [IntPtr]::Zero
 try {
@@ -241,6 +384,106 @@ public static class TestJob {
         Check 'uninstall removed the test shortcut' (-not (Test-Path "$run\startup\$lnkName.lnk"))
         Check 'uninstall stopped the watcher' (-not ($wp | Where-Object { Alive $_.ProcessId }))
     }
+
+    # ---- telemetry server health check (fake exe, fake port + pipe; own game, mutex, state and log dirs) ----
+    $tPort = Get-FreePort; $deadPort = Get-FreePort
+    while ($deadPort -eq $tPort -or $deadPort -eq $Port) { $deadPort = Get-FreePort }
+    $thBase = @{ startTelemetryServer = $true; telemetryServerExe = $telemExe; telemetryServerWindow = 'hidden'; telemetryHealthCheck = $true
+                 telemetryHealthIntervalSec = 1; telemetryHealthFailures = 3; telemetryPort = $tPort; telemetryPipe = $tPipe }
+    Write-Mode 'push busy'
+    $ft = Start-Hidden "$run\bin\faketelem.exe" "$tPort $tPipe `"$tCtl`" `"$tEv`""
+    Check 'telemetry fake: port answers, pipe busy' (Wait-Until { (Test-TPort $tPort) -and [X4TestPipe]::State($tPipe) -eq 'busy' } 20)
+    $cp = Start-Hidden $telemCopy ''        # same file name, other folder: must survive every restart
+    $gT = Start-Hidden $gameT ''
+    $dA = New-THRun 'main' $thBase
+    $wA = Start-THWatcher $dA
+    Check 'telemetry: game start -> configured exe started once (hidden, own folder)' (Wait-Until {
+        (THLog $dA 'telemetry server started (pid') -ge 1 -and @(TelemPids).Count -eq 1 } 30)
+    Check 'telemetry: start line says hidden + cwd' ((THLog $dA ", hidden, cwd $th\telem)") -ge 1)
+    $t0 = @(TelemPids) | Select-Object -First 1
+
+    # 1. healthy: pipe busy + data flows
+    $ws0 = EvCount 'ws'
+    Check 'health ok: WebSocket probed by the checks' (Wait-Until { (EvCount 'ws') -ge $ws0 + 3 } 30)
+    Check 'health ok: no failed check logged' ((THLog $dA 'telemetry server check') -eq 0)
+    Check 'health ok: no restart, same pid keeps running' ((THLog $dA 'telemetry server restarted') -eq 0 -and (@(TelemPids) -join ',') -eq "$t0")
+
+    # 2. waiting: pipe free + WebSocket silent (pipe first, so no probe in flight sees a half switch)
+    Set-Mode 'push free'; Start-Sleep 2
+    Set-Mode 'silent free'; Start-Sleep 1
+    $ws1 = EvCount 'ws'; $ac1 = EvCount 'accept'
+    Check 'health waiting: checks keep running (port probed)' (Wait-Until { (EvCount 'accept') -ge $ac1 + 3 } 30)
+    Check 'health waiting: no WebSocket probe (free pipe is enough)' ((EvCount 'ws') -eq $ws1)
+    Check 'health waiting: no failed check, no restart, same pid' ((THLog $dA 'telemetry server check') -eq 0 -and
+        (THLog $dA 'telemetry server restarted') -eq 0 -and (@(TelemPids) -join ',') -eq "$t0")
+
+    # 3. stuck: pipe busy + WebSocket silent -> restart after 3 checks in a row
+    Set-Mode 'silent busy'
+    Check 'health stuck: restarted after 3 failed checks' (Wait-Until { (THLog $dA 'telemetry server restarted') -ge 1 } 60)
+    Check 'health stuck: log has check 1/3, 2/3, then restarted' (THLogInOrder $dA @('telemetry server check 1/3', 'telemetry server check 2/3', 'telemetry server restarted'))
+    Check 'health stuck: reason is the silent pipe client' ((THLog $dA 'check 1/3: stuck: pipe has a client but only 0 message(s)') -ge 1)
+    Check 'health stuck: old pid gone, a new process of the configured exe runs' (Wait-Until {
+        $p = @(TelemPids); $p.Count -eq 1 -and $p[0] -ne $t0 -and -not (Alive $t0) } 15)
+    $t1 = @(TelemPids) | Select-Object -First 1
+    Check 'health stuck: same-name exe in another folder survived' (Alive $cp.Id)
+
+    # 5. no restart loop: still stuck after the restart -> left alone
+    Check 'health still stuck: logged "leaving it alone"' (Wait-Until { (THLog $dA 'leaving it alone until it has worked again') -ge 1 } 60)
+    $ws2 = EvCount 'ws'; Start-Sleep 7
+    Check 'health still stuck: checks continue (WebSocket probed)' ((EvCount 'ws') -gt $ws2)
+    Check 'health still stuck: no second restart, same pid' ((THLog $dA 'telemetry server restarted') -eq 1 -and (@(TelemPids) -join ',') -eq "$t1")
+    Set-Mode 'push busy'
+    Check 'health recovers: "check: ok" logged' (Wait-Until { (THLog $dA 'telemetry server check: ok') -ge 1 } 30)
+    Set-Mode 'silent busy'
+    Check 'health: new stuck episode after a healthy check restarts again' (Wait-Until { (THLog $dA 'telemetry server restarted') -ge 2 } 60)
+    Check 'health: second restart replaced the pid' (Wait-Until { $p = @(TelemPids); $p.Count -eq 1 -and $p[0] -ne $t1 -and -not (Alive $t1) } 15)
+    $t2 = @(TelemPids) | Select-Object -First 1
+    Check 'health: same-name exe in another folder survived the second restart' (Alive $cp.Id)
+
+    # 8. no-process: the configured exe is closed while the game runs -> started again
+    Set-Mode 'push busy'
+    [void](Wait-Until { (THLog $dA 'telemetry server check: ok') -ge 2 } 30)
+    $st = THLogRx $dA '\] telemetry server started \(pid'
+    Stop-Pid $t2
+    Check 'health no-process: configured exe started again' (Wait-Until { $p = @(TelemPids); $p.Count -eq 1 -and $p[0] -ne $t2 } 30)
+    Check 'health no-process: through the normal start path (log)' ((THLogRx $dA '\] telemetry server started \(pid') -gt $st)
+    Check 'health no-process: same-name exe in another folder untouched' (Alive $cp.Id)
+    Stop-THWatcher $wA
+
+    # 4. port dead: process runs, nothing listens on telemetryPort
+    $cfgB = $thBase.Clone(); $cfgB.telemetryPort = $deadPort
+    $t3 = @(TelemPids) | Select-Object -First 1
+    $dB = New-THRun 'portdead' $cfgB
+    $wB = Start-THWatcher $dB
+    Check 'health port dead: restarted after 3 failed checks' (Wait-Until { (THLog $dB 'telemetry server restarted') -ge 1 } 60)
+    Check 'health port dead: check 1/3, 2/3 with the port reason, then restarted' (THLogInOrder $dB @(
+        'check 1/3: stuck: process runs but the port does not answer', 'check 2/3: stuck: process runs but the port does not answer', 'telemetry server restarted'))
+    Check 'health port dead: old pid gone, new process runs' (Wait-Until { $p = @(TelemPids); $p.Count -eq 1 -and $p[0] -ne $t3 -and -not (Alive $t3) } 15)
+    Check 'health port dead: same-name exe in another folder survived' (Alive $cp.Id)
+    Stop-THWatcher $wB
+
+    # 7a. -DryRun only logs the restart
+    $t4 = @(TelemPids) | Select-Object -First 1
+    $dC = New-THRun 'dryrun' $cfgB
+    $wC = Start-THWatcher $dC '-DryRun'
+    Check 'health DryRun: logs "DRY-RUN: would restart"' (Wait-Until { (THLog $dC 'DRY-RUN: would restart the telemetry server') -ge 1 } 60)
+    Check 'health DryRun: nothing restarted, same pid' ((THLog $dC 'telemetry server restarted') -eq 0 -and (@(TelemPids) -join ',') -eq "$t4")
+    Stop-THWatcher $wC
+
+    # 7b. off by default: no startTelemetryServer / telemetryServerExe -> nothing started, checked or restarted
+    @(TelemPids) | ForEach-Object { Stop-Pid $_ }
+    [void](Wait-Until { @(TelemPids).Count -eq 0 } 10)
+    Set-Mode 'silent busy'   # would count as stuck if anything checked
+    $dD = New-THRun 'off' @{ telemetryHealthIntervalSec = 1; telemetryHealthFailures = 1; telemetryPort = $tPort; telemetryPipe = $tPipe }
+    $ac2 = EvCount 'accept'
+    $wD = Start-THWatcher $dD
+    Check 'health off: game start evaluated ("not enabled in config")' (Wait-Until { (THLog $dD 'telemetry server: not enabled in config') -ge 1 } 30)
+    Start-Sleep 6
+    Check 'health off: telemetry exe not started' (@(TelemPids).Count -eq 0)
+    Check 'health off: no check / restart logged' ((THLog $dD 'telemetry server check') -eq 0 -and (THLog $dD 'restart') -eq 0)
+    Check 'health off: telemetry port never probed' ((EvCount 'accept') -eq $ac2)
+    Stop-THWatcher $wD
+    Check 'health: same-name exe in another folder still alive at the end' (Alive $cp.Id)
 }
 finally {
     if ($job -ne [IntPtr]::Zero) { [void][TestJob]::CloseHandle($job) }
