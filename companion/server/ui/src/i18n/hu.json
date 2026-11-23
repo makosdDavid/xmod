@@ -38,7 +38,9 @@
     "gametime": "Játékidő",
     "help": "Gyorsgombok és billentyűk (?)",
     "palette": "Keresés és ugrás (Ctrl+K)",
-    "search_short": "Keresés"
+    "search_short": "Keresés",
+    "fullscreen": "Teljes képernyő",
+    "fullscreen_exit": "Kilépés a teljes képernyőből"
   },
   "font": {
     "label": "Betűméret",

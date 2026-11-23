@@ -1,7 +1,8 @@
 // Top bar: brand, connection state, captain, credits, sector, ship (hull / shield / speed), target,
 // game time, and the global controls (search, language, font size, help, game commands).
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AArrowDown, AArrowUp, Keyboard, Languages, Search } from "lucide-react";
+import { AArrowDown, AArrowUp, Keyboard, Languages, Maximize, Minimize, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -83,6 +84,44 @@ export function LangFontControls() {
   );
 }
 
+// Full screen (Fullscreen API with webkit fallbacks). Hidden when the API is unavailable
+// (e.g. an iframe without allow="fullscreen"); the icon follows fullscreenchange, so Esc / F11 exits update it.
+type FsDoc = Document & { webkitFullscreenElement?: Element | null; webkitFullscreenEnabled?: boolean; webkitExitFullscreen?: () => Promise<void> | void };
+type FsEl = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
+const fsDoc = () => document as FsDoc;
+const fsActive = () => !!(document.fullscreenElement || fsDoc().webkitFullscreenElement);
+const fsAvailable = () => {
+  const d = fsDoc(), el = document.documentElement as FsEl;
+  return !!((d.fullscreenEnabled || d.webkitFullscreenEnabled) && (el.requestFullscreen || el.webkitRequestFullscreen));
+};
+function toggleFullscreen() {
+  const d = fsDoc(), el = document.documentElement as FsEl;
+  try {
+    const r = fsActive()
+      ? (d.exitFullscreen ? d.exitFullscreen() : d.webkitExitFullscreen?.())
+      : (el.requestFullscreen ? el.requestFullscreen() : el.webkitRequestFullscreen?.());
+    if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(() => {});
+  } catch { /* refused (no user gesture / policy) - nothing to do */ }
+}
+
+export function FullscreenButton() {
+  const { t } = useTranslation();
+  const [on, setOn] = useState(fsActive);
+  useEffect(() => {
+    const h = () => setOn(fsActive());
+    document.addEventListener("fullscreenchange", h);
+    document.addEventListener("webkitfullscreenchange", h);
+    return () => { document.removeEventListener("fullscreenchange", h); document.removeEventListener("webkitfullscreenchange", h); };
+  }, []);
+  if (!fsAvailable()) return null;
+  const label = t(on ? "top.fullscreen_exit" : "top.fullscreen");
+  return (
+    <Tooltip><TooltipTrigger asChild>
+      <Button variant="ghost" size="icon" className="size-7" onClick={toggleFullscreen} aria-label={label} aria-pressed={on}>{on ? <Minimize /> : <Maximize />}</Button>
+    </TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
+  );
+}
+
 export function TopBar() {
   const { t, f } = useT();
   useBus(["player", "status", "ws"], 250);
@@ -130,6 +169,7 @@ export function TopBar() {
         <Tooltip><TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="size-7" onClick={() => setView("hotkeys")} aria-label={t("top.help")}><Keyboard /></Button>
         </TooltipTrigger><TooltipContent>{t("top.help")}</TooltipContent></Tooltip>
+        <FullscreenButton />
         <ControlMenu />
       </div>
     </header>

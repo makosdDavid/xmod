@@ -38,7 +38,9 @@
     "gametime": "Game time",
     "help": "Hotkeys and keys (?)",
     "palette": "Search and jump (Ctrl+K)",
-    "search_short": "Search"
+    "search_short": "Search",
+    "fullscreen": "Full screen",
+    "fullscreen_exit": "Exit full screen"
   },
   "font": {
     "label": "Font size",
