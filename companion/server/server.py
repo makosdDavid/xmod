@@ -13,15 +13,20 @@ Server -> browser: {"type":"init", ...whole state...} on connect, then typed upd
 Browser -> server: {"type":"control","enabled":bool} | {"type":"cmd","cmd":..,"args":[..],"id":n}
   | {"type":"watch","sid":".."} | {"type":"resync"}.
 
-Binds 127.0.0.1 only. Requests with a foreign Host header are refused (DNS rebinding), as are
+Binds 127.0.0.1 by default. Requests with a foreign Host header are refused (DNS rebinding), as are
 WebSockets with a foreign Origin; commands additionally need an allowed Origin header and the
 "vezérlés" switch of that browser tab.
+LAN mode (--host 0.0.0.0, or {"host": "0.0.0.0"} in <state-dir>/server.json): an IP-literal Host is also
+accepted (a rebinding attack needs a DNS name), so http://<lan-ip>:<port>/ works from other machines.
+Peers that are not loopback are view-only: no game control (NEED_CONTROL commands, control switch) and
+no saved-layout writes; those stay reserved to this PC (127.0.0.1).
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import collections
+import ipaddress
 import json
 import logging
 import logging.handlers
@@ -34,7 +39,7 @@ from aiohttp import WSMsgType, web
 
 from pipe import PipeServer, PipeServerError
 
-HOST = "127.0.0.1"
+HOST = "127.0.0.1"              # default bind; LAN: --host 0.0.0.0 or <state-dir>/server.json {"host": ...}
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"              # v1 shell (plain ES modules); also the source of the map module
 DIST = ROOT / "web-dist"        # v2 shell: production build of ui/ (React + shadcn/ui), served when present
@@ -395,9 +400,10 @@ class Client:
     LATEST = {"player", "stats", "status", "galaxy", "gates", "hwlinks", "staticmap", "missions", "offers", "factions",
               "economy", "messages", "hello", "theme"}
 
-    def __init__(self, ws: web.WebSocketResponse, origin_ok: bool) -> None:
+    def __init__(self, ws: web.WebSocketResponse, origin_ok: bool, local: bool = True) -> None:
         self.ws = ws
         self.origin_ok = origin_ok
+        self.local = local          # loopback peer (this PC); LAN peers are view-only
         self.control = False
         self.latest: dict[str, str] = {}
         self.sectors: dict[str, str] = {}
@@ -546,8 +552,9 @@ class Hub:
     def handle_browser(self, c: Client, msg: dict) -> None:
         t = msg.get("type")
         if t == "control":
-            c.control = bool(msg.get("enabled")) and c.origin_ok
-            c.push({"type": "control", "enabled": c.control, "origin_ok": c.origin_ok})
+            c.control = bool(msg.get("enabled")) and c.origin_ok and c.local
+            # origin_ok=False makes the UI grey out the switch; a LAN tab may never enable control
+            c.push({"type": "control", "enabled": c.control, "origin_ok": c.origin_ok and c.local, "local": c.local})
             log.info("browser control %s", "ON" if c.control else "off")
             return
         if t == "watch":
@@ -575,6 +582,9 @@ class Hub:
         if name in NEED_CONTROL:
             if not c.origin_ok:
                 reply(False, "a parancsokhoz böngésző-Origin kell")
+                return
+            if not c.local:
+                reply(False, "vezérlés csak erről a gépről (127.0.0.1)")
                 return
             if not c.control:
                 reply(False, "a vezérlés nincs engedélyezve ezen a lapon")
@@ -644,22 +654,78 @@ def pick_web_root(ui: str) -> Path:
     return WEB
 
 
-def make_app(hub: Hub, port: int, web_root: Path | None = None, layouts: LayoutStore | None = None) -> web.Application:
+def is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def peer_is_local(request: web.Request) -> bool:
+    """True when the TCP peer is this PC via loopback (127.0.0.1 / ::1)."""
+    try:
+        ip = ipaddress.ip_address((request.remote or "").split("%", 1)[0])
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def make_app(hub: Hub, port: int, web_root: Path | None = None, layouts: LayoutStore | None = None,
+             lan: bool = False) -> web.Application:
     root = web_root or pick_web_root("auto")
     layouts = layouts or LayoutStore(STATE)
     allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
     allowed_origins = {f"http://{h}" for h in allowed_hosts}
-    csp = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-           f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; frame-ancestors 'none'")
+    csp_base = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}")
+    # Framing: the user's own cockpit pages (e.g. the X4Telemetry tablet/phone "map only" overlay on port 8080)
+    # may embed the companion - any page served by this same PC, by loopback name or by the IP literal the
+    # companion itself was reached with (Host is validated by host_ok before frame_ancestors uses it).
+    loopback_frames = "'self' http://127.0.0.1:* http://localhost:*"
+    csp = f"{csp_base}; frame-ancestors {loopback_frames}"
+
+    def frame_ancestors(host: str) -> str:
+        name = host.rpartition(":")[0]
+        try:
+            ipaddress.IPv4Address(name)
+        except ValueError:
+            return f"frame-ancestors {loopback_frames}"
+        return f"frame-ancestors {loopback_frames} http://{name}:*"
+
+    def host_ok(host: str) -> bool:
+        if host in allowed_hosts:
+            return True
+        if not lan:
+            return False
+        # LAN mode: also http://<ip-literal>:<port>/ (an IP literal cannot be a DNS-rebinding name)
+        name, sep, p = host.rpartition(":")
+        if not sep or p != str(port):
+            return False
+        try:
+            ipaddress.IPv4Address(name)
+        except ValueError:
+            return False
+        return True
+
+    def origin_ok(request: web.Request, origin: str | None) -> bool:
+        # our loopback origins, or same-origin with the (already validated) Host of this request
+        return origin is not None and (origin in allowed_origins or origin == f"http://{request.host}")
 
     @web.middleware
     async def guard(request: web.Request, handler):
-        if request.host not in allowed_hosts:
+        if not host_ok(request.host):
             return web.Response(status=403, text="forbidden host")
         resp = await handler(request)
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["Referrer-Policy"] = "no-referrer"
-        resp.headers["Content-Security-Policy"] = csp
+        if request.host in allowed_hosts:
+            resp.headers["Content-Security-Policy"] = csp
+        else:
+            resp.headers["Content-Security-Policy"] = f"{csp_base} ws://{request.host}; {frame_ancestors(request.host)}"
         return resp
 
     async def index(_r):
@@ -686,10 +752,13 @@ def make_app(hub: Hub, port: int, web_root: Path | None = None, layouts: LayoutS
         ext = name.rsplit(".", 1)[1]
         return web.FileResponse(p, headers={"Cache-Control": "max-age=31536000, immutable", "Content-Type": CTYPES[ext]})
 
-    # ---- saved layouts: GET is free; writes need no Origin (non-browser) or our own Origin
+    # ---- saved layouts: GET is free; writes need no Origin (non-browser) or our own Origin,
+    #      and only from this PC (a LAN peer can load layouts but not change the file)
     def write_guard(request: web.Request):
+        if not peer_is_local(request):
+            raise web.HTTPForbidden(text="layouts can only be changed from this PC")
         origin = request.headers.get("Origin")
-        if origin is not None and origin not in allowed_origins:
+        if origin is not None and not origin_ok(request, origin):
             raise web.HTTPForbidden(text="forbidden origin")
 
     async def read_json(request: web.Request):
@@ -762,13 +831,14 @@ def make_app(hub: Hub, port: int, web_root: Path | None = None, layouts: LayoutS
 
     async def ws_handler(request: web.Request):
         origin = request.headers.get("Origin")
-        if origin is not None and origin not in allowed_origins:
+        if origin is not None and not origin_ok(request, origin):
             return web.Response(status=403, text="forbidden origin")
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=64 * 1024)
         await ws.prepare(request)
-        client = Client(ws, origin_ok=origin in allowed_origins)
+        local = peer_is_local(request)
+        client = Client(ws, origin_ok=origin_ok(request, origin), local=local)
         hub.clients.add(client)
-        log.info("browser connected (%d open)", len(hub.clients))
+        log.info("browser connected (%d open)%s", len(hub.clients), "" if local else f" from {request.remote} (view-only)")
         snap = hub.store.snapshot()
         snap["status"] = hub.status()
         client.push_raw(jdump(snap))
@@ -834,7 +904,8 @@ def load_static() -> dict | None:
         return None
 
 
-async def main_async(port: int, pipe_name: str, ui: str = "auto", state_dir: Path = STATE) -> None:
+async def main_async(port: int, pipe_name: str, ui: str = "auto", state_dir: Path = STATE, host: str = HOST) -> None:
+    lan = not is_loopback_host(host)
     loop = asyncio.get_running_loop()
     hub = Hub(load_static())
     if not (ICONS / "index.json").is_file():
@@ -848,15 +919,19 @@ async def main_async(port: int, pipe_name: str, ui: str = "auto", state_dir: Pat
     pipe.start()
     web_root = pick_web_root(ui)
     log.info("web UI: %s", web_root)
-    runner = web.AppRunner(make_app(hub, port, web_root, LayoutStore(state_dir)), access_log=None)
+    runner = web.AppRunner(make_app(hub, port, web_root, LayoutStore(state_dir), lan=lan), access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, HOST, port)
+    site = web.TCPSite(runner, host, port)
     try:
         await site.start()
     except OSError:
         pipe.stop()
         raise
-    log.info("dashboard: http://%s:%d  (bound to %s only, pipe \\\\.\\pipe\\%s)", HOST, port, HOST, pipe_name)
+    if lan:
+        log.info("dashboard: http://127.0.0.1:%d and http://<lan-ip>:%d  (bound to %s, LAN peers view-only, "
+                 "pipe \\\\.\\pipe\\%s)", port, port, host, pipe_name)
+    else:
+        log.info("dashboard: http://%s:%d  (bound to %s only, pipe \\\\.\\pipe\\%s)", host, port, host, pipe_name)
     ticker = asyncio.create_task(status_ticker(hub))
     try:
         await asyncio.Event().wait()
@@ -881,9 +956,26 @@ def setup_logging(level: str, logfile: str) -> None:
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 
+def configured_host(state_dir: Path) -> str:
+    """Bind host from <state-dir>/server.json {"host": "..."} (user-owned, git-ignored), else 127.0.0.1."""
+    p = state_dir / "server.json"
+    if p.is_file():
+        try:
+            h = json.loads(p.read_text(encoding="utf-8")).get("host")
+        except (ValueError, AttributeError) as e:
+            log.error("bad %s (%s) - binding %s", p, e, HOST)
+            return HOST
+        if isinstance(h, str) and h.strip():
+            return h.strip()
+    return HOST
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="X4 Companion local server (127.0.0.1 only)")
+    ap = argparse.ArgumentParser(description="X4 Companion local server (127.0.0.1 unless --host / server.json)")
     ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--host", default=None,
+                    help="bind address; default: <state-dir>/server.json 'host', else 127.0.0.1. "
+                         "0.0.0.0 = LAN too (LAN peers are view-only)")
     ap.add_argument("--pipe", default="x4companion", help="pipe name (\\\\.\\pipe\\<name>)")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--log-file", default="x4companion.log")
@@ -893,7 +985,8 @@ def main() -> int:
     a = ap.parse_args()
     setup_logging(a.log_level.upper(), a.log_file)
     try:
-        asyncio.run(main_async(a.port, a.pipe, a.ui, Path(a.state_dir)))
+        host = a.host or configured_host(Path(a.state_dir))
+        asyncio.run(main_async(a.port, a.pipe, a.ui, Path(a.state_dir), host))
     except PipeServerError as e:
         log.error("%s", e)
         return 2
