@@ -60,7 +60,7 @@ DIST = ROOT / "web-dist"
 
 
 def start_server(port=PORT, name="server", pipe=PIPE, *extra):
-    return start(["server.py", "--port", str(port), "--pipe", pipe, "--log-file", f"e2e_{name}_file.log",
+    return start(["server.py", "--port", str(port), "--pipe", pipe, "--host", "127.0.0.1", "--log-file", f"e2e_{name}_file.log",
                   "--state-dir", STATE_DIR, *extra], name)
 
 
@@ -183,6 +183,28 @@ async def main() -> int:
     r = subprocess.run([PY, str(ROOT / "tests" / "test_layouts.py")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     last = [l for l in r.stdout.splitlines() if "checks passed" in l]
     check(r.returncode == 0, f"saved layouts store (save/load/delete/malformed): {last[-1] if last else r.stdout[-300:]}")
+
+    # LAN mode (server.py --host / state\server.json): a peer that is not this PC is view-only - no control,
+    # no commands (in-process: the request's TCP peer and the hub's command guard)
+    sys.path.insert(0, str(ROOT))
+    import server as srvmod
+    from unittest import mock
+    from aiohttp.test_utils import make_mocked_request
+
+    def req_from(ip):
+        tr = mock.Mock()
+        tr.get_extra_info.side_effect = lambda k, d=None: (ip, 50000) if k == "peername" else d
+        return make_mocked_request("GET", "/ws", transport=tr)
+    locs = [srvmod.peer_is_local(req_from(ip)) for ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "192.168.1.20", "10.0.0.5", "fe80::1")]
+    check(locs == [True, True, True, False, False, False], f"[lan] only loopback peers count as this PC ({locs})")
+    hub = srvmod.Hub(None)
+    lan_c = srvmod.Client(None, origin_ok=True, local=False)
+    hub.handle_browser(lan_c, {"type": "control", "enabled": True})
+    hub.handle_browser(lan_c, {"type": "cmd", "cmd": "target", "args": ["123"], "id": 1})
+    replies = [json.loads(x) for x in lan_c.queue if '"cmdreply"' in x]
+    ctl = json.loads(lan_c.latest.get("control") or next((x for x in lan_c.queue if '"control"' in x), "{}"))
+    check(not lan_c.control and ctl.get("enabled") is False and replies and not replies[0]["ok"] and hub.cmd_seq == 0,
+          f"[lan] a LAN peer cannot enable control nor send a command (view-only): {replies[:1]}")
 
     server = start_server()
     async with aiohttp.ClientSession() as s:
@@ -454,6 +476,28 @@ async def main() -> int:
             check(got is not None and ws.of("player"), "[server restart] game reconnects by itself and resends everything")
         stop(sim)
 
+        # 5b) v1.3 mission guidance scenarios (sim --guidance = what the new bridge sends as player.gd), through the
+        #     server to the browser unchanged; the undiscovered-target scenario leaks nothing (checked in 7b too)
+        expect = {
+            "route": lambda g: g.get("k") == "mission" and len(g.get("r") or []) >= 2 and g.get("t", {}).get("s") and g["t"].get("x") is not None
+                               and len({q["s"] for q in g["r"]}) >= 2,
+            "local": lambda g: g.get("r") == [] and g.get("t", {}).get("c") == "station",
+            "position": lambda g: g.get("t", {}).get("c") == "zone" and g["t"].get("x") is not None and "n" not in g["t"],
+            "inside": lambda g: g.get("t", {}).get("c") == "room" and (g["t"].get("in") or {}).get("c") == "station",
+            "unknown": lambda g: g.get("th") and g.get("cut") and "t" not in g,
+            "off": lambda g: g.get("off") and "r" not in g and "t" not in g,
+            "none": lambda g: g is None,
+        }
+        for sc, ok in expect.items():
+            async with s.ws_connect(BASE + "/ws", origin=ORIGIN) as raw:
+                ws = WS(raw)
+                sim = start_sim("--guidance", sc, "--seconds", "5", "--speed", "3", name=f"sim_gd_{sc}")
+                await ws.pump(5.5)
+                pls = ws.of("player")
+                gd = pls[-1].get("gd") if pls else "no player message"
+                check(pls and ok(gd), f"[guidance] sim scenario '{sc}': player.gd as the bridge sends it ({json.dumps(gd, ensure_ascii=False)[:160]})")
+                sim.wait(20)
+
         # 6) big empire: 900 ships -> chunked property messages, all arrive
         async with s.ws_connect(BASE + "/ws", origin=ORIGIN) as raw:
             ws = WS(raw)
@@ -481,7 +525,8 @@ async def main() -> int:
               f"[discovery] no undiscovered sector/station name or id in {len(ALLRAW)} browser messages ({blob.count('SECRET')} names, {len(leaked_ids)} ids)")
 
         # 8) a second server on the same pipe must refuse to start
-        dup = start(["server.py", "--port", str(PORT + 1), "--pipe", PIPE, "--log-file", "e2e_dup_file.log"], "server_dup")
+        dup = start(["server.py", "--port", str(PORT + 1), "--pipe", PIPE, "--host", "127.0.0.1", "--state-dir", STATE_DIR,
+                     "--log-file", "e2e_dup_file.log"], "server_dup")
         rc = dup.wait(20)
         check(rc == 2, f"second server on the same pipe exits with error (rc={rc})")
 

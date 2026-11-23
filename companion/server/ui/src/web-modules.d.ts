@@ -17,6 +17,7 @@ declare module "@web/map.js" {
     toggleMode(): void;
     showSector(sid: string | null): void;
     centerOn(id: string): void;
+    showGuidance?(): boolean;
     currentSid(): string | null;
     resize(): void;
     auto(): void;
@@ -40,6 +41,8 @@ declare module "@web/mapstyle.js" {
   export function staticClusterIndex(json: unknown): any;
   export function isOwnerlessShip(o: any): boolean;
   export function takeSectorExtras(S: any, scan: any): any;
+  export function guidanceModel(S: any): any | null;
+  export function guidanceRuns(model: any, sid: string, from?: [number, number] | null): { runs: [number, number][][]; end: any | null };
   export const OWNERLESS_COLOR: RGB;
   export function galaxyIndex(liveGalaxy: any[], gates?: any[], scans?: Record<string, any>, hwlinks?: any[], staticByMacro?: any): {
     sectors: Map<string, any>; clusters: Map<string, any>; sectorByMacro: Map<string, string>;

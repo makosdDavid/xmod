@@ -31,6 +31,17 @@ describe("token files en.json / hu.json", () => {
   });
 });
 
+describe("texts of the full-screen toggle and the mission guidance (v1.3)", () => {
+  it("exist in en and hu", () => {
+    const E = flat(en as Tree), H = flat(hu as Tree);
+    const keys = ["top.fullscreen", "top.fullscreen_exit", "guidance.title", "guidance.show", "guidance.show_tip", "guidance.jumps", "guidance.off"];
+    expect(keys.filter((k) => !E[k] || !H[k])).toEqual([]);
+    for (const k of ["map.gd.hop", "map.gd.hop.one", "map.gd.hop.open", "map.gd.label", "map.legend.guidance"]) {
+      expect(STRINGS.en[k] && STRINGS.hu[k]).toBeTruthy();
+    }
+  });
+});
+
 describe("map texts (web/map-strings.js, injected through the shell's translator)", () => {
   it("en and hu have the same keys and {placeholders}", () => {
     const e = STRINGS.en, h = STRINGS.hu;

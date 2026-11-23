@@ -33,6 +33,123 @@ def check(ok, what):
     print(("PASS " if ok else "FAIL ") + what, flush=True)
 
 
+def guidance_checks(src: str) -> None:
+    """v1.3 mission guidance: the target from GetMissionIDObjectiveTarget (mock), the route from the MD round trip
+    (mock of md\\x4_companion_guidance.xml), the discovery rule, disableguidance, plotted course, no mission."""
+    rt = lupa.LuaRuntime(unpack_returned_tuples=True)
+    rt.execute((ROOT / "mock_game.lua").read_text(encoding="utf-8"))
+    rt.execute(src)
+    M, T = rt.globals().MOCK, rt.globals().__X4COMPANION_TEST
+    G = M.gdt
+    gates = [int(g) for g in M.W.gates.values()]     # [unknown a (501), b (520), a1 (501), b1 (502), a2 (502), b2 (503), ...]
+    vis = int(rt.eval("""(function() for id, o in pairs(MOCK.W.objs) do
+        if o.class == "station" and o.sector == 501 and o.owner == "argon" and o.isknown ~= false and o.name:sub(1, 6) == "argon " then return id end
+      end end)()"""))
+    secret_st = int(M.secretstation)
+    host = M.W.objs[int(G.host)]
+    lt = rt.table_from
+
+    def run(sec=1.0):
+        n = len(M.out)
+        for _ in range(int(sec * 60)):
+            M.frame(1 / 60)
+        new = [json.loads(s) for s in list(M.out.values())[n:]]
+        pls = [m for m in new if m["type"] == "player"]
+        return (pls[-1] if pls else {}), new, "\n".join(list(M.out.values())[n:])
+
+    run(4.0)                                         # the missions channel has run once (mission type / objective)
+    M.objtargets = lt([vis]); M.gdpath = lt([])
+    pl, _, _ = run()
+    gd = pl.get("gd") or {}
+    t = gd.get("t") or {}
+    check(gd.get("k") == "mission" and gd.get("mid") == "60001" and gd.get("ob") == "Objective 1" and gd.get("n") == "Mission 1"
+          and t.get("id") == str(vis) and t.get("s") == "501" and t.get("x") is not None and gd.get("r") == [] and int(M.gd_value) == vis,
+          f"guidance, component target in the player's sector: target id/sector/position, empty route, MD got the target ({gd})")
+
+    req0 = int(M.gd_req)
+    M.objtargets = lt([G.station503])
+    M.gdpath = lt([G.zone, gates[2], gates[3], gates[4], gates[5], G.station503])
+    pl, _, _ = run()
+    gd = pl.get("gd") or {}
+    r = gd.get("r") or []
+    check([p["s"] for p in r] == ["501", "502", "502", "503"] and [p["id"] for p in r] == [str(g) for g in gates[2:6]]
+          and all(p.get("x") is not None and p.get("k") == "g" for p in r) and (gd.get("t") or {}).get("s") == "503"
+          and int(M.gd_req) > req0,
+          f"guidance, cross-sector route: gate / exit gate per hop in order (zones and the target itself left out), re-asked on the target change ({r})")
+
+    M.objtargets = lt([G.zone]); M.gdpath = lt([G.zone])
+    pl, _, _ = run()
+    t = (pl.get("gd") or {}).get("t") or {}
+    check(t.get("c") == "zone" and t.get("x") == 70000 and t.get("z") == -30000 and "n" not in t,
+          f"guidance, position target (zone): position, no name ({t})")
+
+    M.objtargets = lt([G.room]); M.gdpath = lt([])
+    pl, _, _ = run()
+    t = (pl.get("gd") or {}).get("t") or {}
+    check(t.get("c") == "room" and (t.get("in") or {}).get("id") == str(int(G.host)) and t.get("x") == host["x"] and t.get("z") == host["z"],
+          f"guidance, target inside a station (room): drawn at the station, 'in' names it ({t})")
+
+    M.objtargets = lt([int(M.secret2)]); M.gdpath = lt([gates[0], gates[1], int(M.secret2)])
+    pl, new, txt = run()
+    gd = pl.get("gd") or {}
+    check(gd.get("th") and gd.get("cut") and gd.get("r") == [] and "t" not in gd and "SECRET" not in txt and '"520"' not in txt,
+          f"guidance into an undiscovered sector: no target, the route stops before the unknown gate, nothing leaked ({gd})")
+
+    M.objtargets = lt([secret_st]); M.gdpath = lt([])
+    pl, new, txt = run()
+    t = (pl.get("gd") or {}).get("t") or {}
+    check(t.get("x") is not None and t.get("nk") and "n" not in t and "SECRET" not in txt,
+          f"guidance to an undiscovered object in a known sector: shown (position) like the game, without its name ({t})")
+
+    M.objtargets = lt([]); M.gdpath = lt([]); M.gdwp = gates[2]
+    pl, _, _ = run()
+    gd = pl.get("gd") or {}
+    check([p["id"] for p in gd.get("r") or []] == [str(gates[2])] and "t" not in gd,
+          f"guidance without a UI target: the game's own next hop (activemissionwaypoint) as the route ({gd.get('r')})")
+    M.gdwp = None
+
+    M.objtargets = lt([vis]); M.gdpath = lt([])
+    run(0.5)
+    req1 = int(M.gd_req)
+    M.ob1 = "Hack: Repair Terminal"
+    pl, _, _ = run(4.0)
+    check((pl.get("gd") or {}).get("ob") == "Hack: Repair Terminal" and int(M.gd_req) > req1,
+          f"objective change of the active mission -> new objective text and route asked again ({int(M.gd_req) - req1} requests)")
+
+    M.dg1 = True
+    pl, _, _ = run(4.0)
+    gd = pl.get("gd") or {}
+    check(gd.get("off") and "r" not in gd and "t" not in gd, f"mission with disableguidance: guidance off, nothing to draw ({gd})")
+    M.dg1 = False
+
+    M.mt1 = "guidance"; M.guidancetarget = vis; M.objtargets = lt([])
+    pl, _, _ = run(4.0)
+    gd = pl.get("gd") or {}
+    check(gd.get("k") == "course" and (gd.get("t") or {}).get("id") == str(vis), f"plotted course: kind 'course', target = guidance component ({gd})")
+    M.mt1 = None; M.guidancetarget = None
+
+    M.am = 60002; M.objbase = 0; M.objtargets = lt([G.station503, G.zone])
+    pl, _, _ = run()
+    gd = pl.get("gd") or {}
+    check(T.GD.base == 0 and gd.get("tn") == 2 and (gd.get("t") or {}).get("id") == str(int(G.station503)),
+          f"objective target index base probed per mission (0-based here), several targets counted ({T.GD.base}, {gd.get('tn')})")
+
+    c0 = int(M.calls["GetMissionIDObjectiveTarget"] or 0)
+    run(10.0)
+    calls = int(M.calls["GetMissionIDObjectiveTarget"] or 0) - c0
+    st = [json.loads(s) for s in M.out.values() if '"type":"stats"' in s][-1]
+    check(calls <= 11 * 3 and st.get("gd", {}).get("rx", 0) > 0 and st["ch"]["player"]["err"] == 0,
+          f"guidance cost: {calls} objective-target calls in 10 s (probe 1/s), stats gd={st.get('gd')}")
+
+    M.am = 0
+    n = len(M.out)
+    M.frame(1 / 60)
+    for _ in range(20):
+        M.frame(1 / 60)
+    pls = [json.loads(s) for s in list(M.out.values())[n:] if '"type":"player"' in s]
+    check(pls and "gd" not in pls[0], f"no active mission (guidance ended): 'gd' gone with the next player message ({len(pls)} msgs)")
+
+
 def main() -> int:
     rt = lupa.LuaRuntime(unpack_returned_tuples=True)
     rt.execute((ROOT / "mock_game.lua").read_text(encoding="utf-8"))
@@ -413,6 +530,8 @@ def main() -> int:
     later = [s for s in list(M3.out.values())[n8:] if '"x4c_resarea"' in s]
     check(len(later) >= 1 and int(M3.mineable_calls) == c,
           f"no further sampling while the player stays (refresh every 10 min); cached areas re-sent with every 10th scan ({len(later)} in 10 s)")
+
+    guidance_checks(src)
 
     failed = [w for ok, w in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

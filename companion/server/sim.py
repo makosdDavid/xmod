@@ -464,6 +464,111 @@ class World:
         self.money += int(r.uniform(-2000, 9000) * dt)
         return []
 
+    # ---------------------------------------------------------------- v1.3 mission guidance
+    # What the bridge sends as "gd" (x4_companion.lua guidanceField): the active mission's target and the
+    # route the game's path finder computes (MD get_global_path): per hop the gate in this sector and its exit
+    # gate in the next, cut before the first gate into an undiscovered sector. Scenarios (--guidance):
+    # route (a station 2+ jumps away), local (a station in the player's sector), position (a zone = a point),
+    # inside (a room in a station), unknown (a target in undiscovered space), off (disableguidance), none.
+    def _gd_adj(self) -> dict:
+        if getattr(self, "_gdadj", None) is None:
+            adj: dict[str, list] = {}
+            for g in self.gates:
+                ex = self.objects.get(g["ds"], {}).get(g.get("d")) if g.get("d") else None
+                if ex:
+                    adj.setdefault(g["s"], []).append((g, ex))
+            self._gdadj = adj
+        return self._gdadj
+
+    def gd_path(self, start: str, goal: str) -> list[tuple[dict, dict]] | None:
+        adj = self._gd_adj()
+        prev = {start: None}
+        q = [start]
+        while q:
+            cur = q.pop(0)
+            if cur == goal:
+                break
+            for g, ex in sorted(adj.get(cur, []), key=lambda e: e[0]["id"]):
+                if ex["s"] not in prev:
+                    prev[ex["s"]] = (cur, g, ex)
+                    q.append(ex["s"])
+        if goal not in prev:
+            return None
+        hops = []
+        c = goal
+        while prev[c] is not None:
+            a, g, ex = prev[c]
+            hops.insert(0, (g, ex))
+            c = a
+        return hops
+
+    def gd_pick(self, scenario: str) -> None:
+        """the target of a scenario, chosen once (deterministic per seed)"""
+        start = self.player_sector
+        if scenario in ("route", "unknown"):
+            dist = {start: 0}
+            q = [start]
+            while q:
+                cur = q.pop(0)
+                for g, ex in self._gd_adj().get(cur, []):
+                    if ex["s"] not in dist:
+                        dist[ex["s"]] = dist[cur] + 1
+                        q.append(ex["s"])
+            want = (lambda s: s in self.known and dist[s] >= 2) if scenario == "route" else (lambda s: s not in self.known and dist[s] >= 1)
+            cands = sorted((dist[s], s) for s in dist if want(s))
+            for _, sid in cands:
+                st = sorted((o for o in self.objects[sid].values() if o["c"] == "station" and (scenario == "unknown" or not o.get("unknown"))),
+                            key=lambda o: o["id"])
+                if st:
+                    self.gd_target = st[0]
+                    return
+            self.gd_target = None
+
+    def gd_field(self, scenario: str, act: dict | None) -> dict | None:
+        if scenario == "none" or not act:
+            return None
+        gd = {"k": "mission", "mid": act["id"], "n": act["n"], "ob": act.get("ob")}
+        if scenario == "off":
+            gd["off"] = True
+            return gd
+        ps = self.player_sector
+        here = [o for o in self.objects[ps].values() if o["c"] == "station" and not o.get("unknown")]
+        p = self.player_ship
+        if scenario in ("local", "inside") and here:
+            st = min(here, key=lambda o: math.hypot(o["x"] - p["x"], o["z"] - p["z"]))
+            t = {"id": st["id"], "c": "station", "s": ps, "x": round(st["x"]), "z": round(st["z"]), "n": st["n"]}
+            if scenario == "inside":
+                t = {"id": "9" + st["id"], "c": "room", "s": ps, "x": round(st["x"]), "z": round(st["z"]), "n": "Repair Terminal",
+                     "in": {"id": st["id"], "n": st["n"], "c": "station"}}
+            gd.update(r=[], t=t)
+            return gd
+        if scenario == "position":
+            gd.update(r=[], t={"id": "8" + ps, "c": "zone", "s": ps, "x": 60000, "z": -40000})
+            return gd
+        if not hasattr(self, "gd_target"):
+            self.gd_pick(scenario)
+        tg = self.gd_target
+        if tg is None:
+            gd["r"] = []
+            return gd
+        hops = self.gd_path(ps, tg["s"]) or []
+        pts, cut = [], False
+        for g, ex in hops:
+            if ex["s"] not in self.known:
+                cut = True        # the gate into undiscovered space is not shown either
+                break
+            kin, kout = ("g", "g") if g["c"] == "gate" else ("he", "hx")
+            pts.append({"s": g["s"], "x": round(g["x"]), "z": round(g["z"]), "id": g["id"], "k": kin})
+            pts.append({"s": ex["s"], "x": round(ex["x"]), "z": round(ex["z"]), "id": ex["id"], "k": kout})
+        gd["r"] = pts
+        if cut or tg["s"] not in self.known:
+            gd["th"] = True
+            if cut:
+                gd["cut"] = True
+        else:
+            gd["t"] = {"id": tg["id"], "c": "station", "s": tg["s"], "x": round(tg["x"]), "z": round(tg["z"]), "n": tg["n"]}
+        return gd
+
     def _move_player(self, sid: str, dest_gate: dict | None) -> None:
         p = self.player_ship
         self.objects[self.player_sector].pop(p["id"], None)
@@ -581,6 +686,9 @@ class Bridge:
         act = next((x for x in w.missions if x.get("act")), None)
         if act:
             m["mission"] = {"id": act["id"], "name": act["n"]}
+        gd = w.gd_field(self.a.guidance, act)
+        if gd:
+            m["gd"] = gd
         if self.watch:
             m["watch"] = self.watch
         self.send(m)
@@ -1000,6 +1108,8 @@ def main() -> int:
     ap.add_argument("--discover", action="store_true", help="fly into undiscovered sectors (sector-change / discovery scenario)")
     ap.add_argument("--galaxy-on-jump", action="store_true", help="send galaxy + sector at once on a sector change (bridge since M6)")
     ap.add_argument("--player-speed", type=float, default=2500.0)
+    ap.add_argument("--guidance", choices=["route", "local", "position", "inside", "unknown", "off", "none"], default="route",
+                    help="v1.3 mission guidance scenario of the active mission (bridge 'gd')")
     ap.add_argument("--replay", type=Path, default=None, help="play a live snapshot (GET /api/state JSON) back instead of simulating")
     ap.add_argument("--replay-frozen", action="store_true", help="replay: send player and scans only once (no new snapshots)")
     a = ap.parse_args()

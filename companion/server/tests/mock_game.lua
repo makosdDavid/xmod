@@ -83,7 +83,7 @@ end
 -- undiscovered content: must never leave the bridge
 W.objs[520].known = false
 W.objs[520].name = "SECRET_SECTOR"
-addobj(W.sector, "argon", "station", "SECRET_STATION", { isknown = false })
+MOCK.secretstation = addobj(W.sector, "argon", "station", "SECRET_STATION", { isknown = false }).id
 W.secretship = addobj(W.sector, "xenon", "ship_l", "SECRET_SHIP", { isinliveview = false, live = false }).id
 MOCK.secretship = W.secretship
 for i = 1, 3 do addobj(W.sector, "player", "satellite", "Own Satellite " .. i) end
@@ -104,6 +104,16 @@ for i = 1, 6 do
     W.gates[#W.gates + 1] = a.id; W.gates[#W.gates + 1] = b.id
 end
 
+-- v1.3 guidance targets: a station two jumps away (503), a zone (position target), a room inside a station
+MOCK.gdt = {}
+MOCK.gdt.station503 = addobj(503, "argon", "station", "Target Station 503").id
+MOCK.gdt.zone = obj(nid(), { class = "zone", name = "Zone", sector = 501, x = 70000, z = -30000 }).id
+do
+    local host = addobj(501, "argon", "station", "Host Station")
+    MOCK.gdt.host = host.id
+    MOCK.gdt.room = obj(nid(), { class = "room", name = "Repair Terminal", sector = 501, container = host.id, x = 1, z = 1, isknown = true }).id
+end
+
 -------------------------------------------------------------------------------- ffi.C mock
 local function n64(v) return tonumber(v) end
 local function O(id) return W.objs[n64(id)] end
@@ -116,7 +126,7 @@ C.GetPlayerOccupiedShipID = function() return W.ship end
 C.GetContextByClass = function(id, cls, inc)
     local o = O(id); if not o then return 0 end
     if cls == "sector" then return o.sector or (o.class == "sector" and n64(id)) or 0 end
-    if cls == "container" then return 0 end
+    if cls == "container" then return o.container or 0 end
     return 0
 end
 C.GetObjectPositionInSector = function(id)
@@ -211,7 +221,17 @@ C.GetMessages = function(buf, len, start, cnt, cat)
 end
 C.GetNumCurrentMissionOffers = function() return 14 end
 C.GetCurrentMissionOffers = function(buf, n) for i = 0, n - 1 do buf[i] = 80000 + i end; return n end
-C.GetActiveMissionID = function() return 60001 end
+C.GetActiveMissionID = function() return MOCK.am or 60001 end
+-- v1.3 guidance: objective targets of a mission (MOCK.objtargets, index base MOCK.objbase, default 1-based like
+-- GetMissionObjectiveStep3); out of range -> 0
+MOCK.objbase = 1
+C.GetMissionIDObjectiveTarget = function(mid, idx)
+    count("GetMissionIDObjectiveTarget")
+    local list = MOCK.objtargets or {}
+    local i = tonumber(idx) - MOCK.objbase + 1
+    if i < 1 or not list[i] then return 0 end
+    return list[i]
+end
 C.GetUIRelationName = function(a, b) return ffi.new("RelationRangeInfo", { cs("Neutral"), cs("neutral") }) end
 C.GetNumTransactionLog = function() return 850 end
 C.GetTransactionLog = function(buf, n)
@@ -337,10 +357,10 @@ MOCK.nticker = 40
 function GetNumMissions() return 6 end
 function GetActiveMission() return 1 end
 function GetMissionDetails(i)
-    return ConvertStringToLuaID(tostring(60000 + i)), "Mission " .. i, "desc", 2, "", "fight", "", "Fight", "argon", 50000 * i, "",
-           nil, nil, nil, nil, nil, 600, nil, true, false, ConvertStringToLuaID(tostring(W.playerships[2])), 0, true, nil
+    return ConvertStringToLuaID(tostring(60000 + i)), "Mission " .. i, "desc", 2, "", (i == 1 and MOCK.mt1) or "fight", "", "Fight", "argon", 50000 * i, "",
+           nil, nil, nil, nil, nil, 600, nil, true, (i == 1 and MOCK.dg1) or false, ConvertStringToLuaID(tostring(W.playerships[2])), 0, true, nil
 end
-function GetMissionObjective(i) return "Objective " .. i, 300, "Progress", 1, 5 end
+function GetMissionObjective(i) return (i == 1 and MOCK.ob1) or ("Objective " .. i), 300, "Progress", 1, 5 end
 function GetMissionOfferDetails(id)
     return "Offer " .. idof(id), "desc", 1, "", "trade", "", "Trade", "teladi", 12000, "", nil, nil, nil, nil, nil, 0, 900, nil, nil, nil, nil,
            ConvertStringToLuaID(tostring(W.playerships[3]))
@@ -349,8 +369,21 @@ function GetWareData(w, p) return "Ware " .. w end
 MOCK.bb = {}
 function GetNPCBlackboard(id, var) return (MOCK.bb[idof(id)] or {})[var] end
 function SetNPCBlackboard(id, var, val) MOCK.bb[idof(id)] = MOCK.bb[idof(id)] or {}; MOCK.bb[idof(id)][var] = val end
-function AddUITriggeredEvent(screen, control)
+function AddUITriggeredEvent(screen, control, value)
     MOCK.raise[#MOCK.raise + 1] = screen .. "/" .. control
+    if screen == "x4companion" and control == "guidance" and MOCK.md_guidance ~= false and MOCK.events["x4companion.guidance"] then
+        -- what md\x4_companion_guidance.xml does: the expanded path (MOCK.gdpath, ids), [known, n], the
+        -- waypoint, ONE event (here also a duplicate delivery, which must be harmless)
+        MOCK.gd_req = (MOCK.gd_req or 0) + 1
+        MOCK.gd_value = value and idof(value) or 0
+        local pl = {}
+        for _, id in ipairs(MOCK.gdpath or {}) do pl[#pl + 1] = ConvertStringToLuaID(tostring(id)) end
+        SetNPCBlackboard(W.player, "$x4companion_gdpath", pl)
+        SetNPCBlackboard(W.player, "$x4companion_gdinfo", { MOCK.gdknown or 1, #pl })
+        SetNPCBlackboard(W.player, "$x4companion_gdwp", MOCK.gdwp and ConvertStringToLuaID(tostring(MOCK.gdwp)) or nil)
+        MOCK.events["x4companion.guidance"]("x4companion.guidance", #pl)
+        MOCK.events["x4companion.guidance"]("x4companion.guidance", #pl)
+    end
     if screen == "x4companion" and control == "gates" and MOCK.md_gates ~= false then
         -- what md\x4_companion_gates.xml does: both lists on player.entity's blackboard, ONE event
         local gl = {}

@@ -49,6 +49,7 @@ Minden hívás az `S(név, fn, …)` burkolón megy át: pcall, forrásonkénti 
 | `SetFocusMapComponent` | menu_map.lua:933 | menu_map.lua:2727 | parancs `openmap` (ha a térkép nyitva) |
 | `IsOrderSelectableFor` | menu_map.lua:862 | menu_map.lua:3450 | parancs `flyto` |
 | `RemoveOrder`, `ResetOrderLoop`, `CreateOrder`, `EnablePlannedDefaultOrder` | menu_map.lua:893 / :901 / :537 / :543 | menu_map.lua:2865, :2929-2933; menu_interactmenu.lua:883-915 | parancs `stop` |
+| `GetMissionIDObjectiveTarget` (v1.3) | menu_missionbriefing.lua:71 | – (a vanilla deklarálja, de sehol nem hívja; indexbázis küldetésenként próbálva: 0, különben 1; élesben nem ellenőrzött) | player `gd.t` (a küldetés célpontja) |
 | `QueryPerformanceCounter/Frequency` | – (Windows kernel32, nem játékfüggvény) | – | költségmérés |
 
 A struktúrák a vanilla deklaráció szó szerinti másolatai; a híd csak akkor deklarál egy típust, ha
@@ -120,6 +121,9 @@ használható), ezért ez közelítés: a szabályok a vanilla menük *saját* s
 | `raise_lua_event name=… param="$komponens"` | md\cover.xml:397 |
 | `event_ui_triggered screen=… control=…` | md\rml_buildstation.xml:823; KNOWLEDGEBASE „event_ui_triggered round-trip” |
 | ütem: `cue instantiate="true" checkinterval="250ms"` | SN md\time_api.xml (MD_New_Frame) |
+| `get_global_path component=… multiple="true" uselocalhighways=… refobject=… useknownpath=…` (v1.3, md\x4_companion_guidance.xml) | aiscripts\move.autopilot.xml:296-311 (a guidance útkeresése: „changes to path finding logic here need to be kept consistent with guidance code”) |
+| `player.activemissionwaypoint` (v1.3) | scriptproperties.xml:2445; md\conversations.xml:371-373 (ismeretlen következő szektor → a játék nem mutat guidance-t) |
+| `gate.exit`, `highway.entry` / `.exit` (v1.3) | scriptproperties (gate, highway); md\x4ep1_war_subscriptions.xml:8838-8842 |
 
 ## v1.1 – térkép-hűség, kapuk, időmérés (új hívások, mind pcall-ban)
 

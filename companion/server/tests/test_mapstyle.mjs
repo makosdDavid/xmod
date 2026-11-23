@@ -77,6 +77,34 @@ const { sectorHexApothem, hexRadiusOfApothem, insideHex } = await import("../web
   check(inAll && a < 150000 * 1.0 * 1.2, `sector hexagon contains every point and radar circle (apothem ${Math.round(a / 1000)} km)`);
   check(sectorHexApothem([], []) === 60000 && sectorHexApothem([{ x: 1000, z: 0 }]) === 60000, "sector hexagon never below the 60 km minimum");
 }
+// v1.3 mission guidance model (bridge "gd"): the game's route, cut / hidden / off, the legacy plotted course
+const { guidanceModel, guidanceRuns } = await import("../web/mapstyle.js");
+{
+  const P = (gd, extra = {}) => ({ player: { sector: { id: "1" }, object: { x: 0, z: 0 }, gd, ...extra } });
+  const gd = { k: "mission", mid: "9", ob: "Hack: Repair Terminal",
+               r: [{ s: "1", x: 1000, z: 0, id: "h1", k: "he" }, { s: "1", x: 50000, z: 0, id: "h2", k: "hx" }, { s: "1", x: 90000, z: 9000, id: "g1", k: "g" },
+                   { s: "2", x: -90000, z: 0, id: "g1x", k: "g" }, { s: "2", x: 0, z: 90000, id: "g2", k: "g" }, { s: "3", x: 0, z: -90000, id: "g2x", k: "g" }],
+               t: { id: "t", s: "3", x: 2000, z: 3000, n: "Terminal" } };
+  const M = guidanceModel(P(gd));
+  check(M && M.jumps === 2 && M.sectors.join() === "1,2,3" && M.targetSid === "3" && M.pts.length === 7 && M.pts[6].k === "t",
+        `guidance model: route points + target, sectors 1,2,3, 2 jumps (${M && M.sectors})`);
+  const a = guidanceRuns(M, "1", [5, 5]);
+  check(a.runs.length === 1 && JSON.stringify(a.runs[0]) === JSON.stringify([[5, 5], [1000, 0], [50000, 0], [90000, 9000]]) && a.end.id === "g1" && a.end.next === "2",
+        "player's sector: polyline = player -> highway entry -> exit -> gate (the route's waypoints, not a straight line), ends at the next hop");
+  const b = guidanceRuns(M, "2", null), c = guidanceRuns(M, "3", null);
+  check(b.runs.length === 1 && b.runs[0].length === 2 && b.end.next === "3" && c.runs[0].length === 2 && c.end.k === "t",
+        "other sectors on the route: arrival gate -> exit gate; last sector ends at the target");
+  check(guidanceRuns(guidanceModel(P({ ...gd, rq: true })), "1", [0, 0]).runs.length === 0, "route still being computed: nothing drawn (no stray line)");
+  check(guidanceModel(P({ k: "mission", off: true })).off && guidanceRuns(guidanceModel(P({ k: "mission", off: true })), "1", [0, 0]).runs.length === 0,
+        "disableguidance: nothing drawn");
+  const H = guidanceModel(P({ k: "mission", th: true, cut: true, r: [] }));
+  check(H.hidden && H.target === null && H.pts.length === 0 && guidanceRuns(H, "1", [0, 0]).runs.length === 0, "target in undiscovered space: no target, no line");
+  check(guidanceModel(P(undefined)) === null && guidanceModel({}) === null, "no guidance: null");
+  const L1 = guidanceModel(P(undefined, { guidance: { id: "x", s: "1", x: 100, z: 200, n: "St" } }));
+  const L2 = guidanceModel(P(undefined, { guidance: { id: "x", s: "5", x: 100, z: 200, n: "St" } }));
+  check(L1.legacy && guidanceRuns(L1, "1", [0, 0]).runs[0].length === 2 && L2.legacy && L2.jumps === null && guidanceRuns(L2, "1", [0, 0]).runs.length === 0,
+        "old bridge (plotted course only): straight line in the own sector, no guessed route to another sector");
+}
 const { STRINGS } = await import("../web/map-strings.js");
 const ek = Object.keys(STRINGS.en), hk = Object.keys(STRINGS.hu);
 check(ek.length === hk.length && ek.every((k) => hk.includes(k)) && STRINGS.hu["map.chip.ownerless"] === "Gazdátlan hajók",

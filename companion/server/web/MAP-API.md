@@ -56,6 +56,7 @@ waits and draws as soon as the element gets a real size. `map.resize()` forces a
 | `setTranslator(t)` | swap the translator at runtime (null = English); re-renders all texts |
 | `setStaticMap(json)` | optional: cluster layout source, the `data/static_map.json` export (or the subset `{clusters:[{macro, sectors:[{macro, x, z}]}]}` of clusters that have ≥1 known sector). Only used to place sectors inside their cluster hexagon independent of discovery; nothing undiscovered is drawn from it |
 | `overlayRects()` | `{w, h, rects: {info, layersBtn, layers, legend, legendBtn, miniBtn, zoom, follow, back, mini, scale}}` of the visible overlays (container px) |
+| `showGuidance()` | v1.3: show the active mission guidance – the target's sector, camera focused on the target (zoom rules unchanged), else the galaxy view; `false` = nothing to show |
 | `destroy()` | stops the animation loop, disconnects observers, removes window/bus listeners and all DOM the map added. The instance is dead afterwards |
 
 ## Bus events
@@ -74,6 +75,7 @@ The map only reads `S`; the shell fills it from the server messages (see `app.js
 | Field | From message | Shape |
 |---|---|---|
 | `S.player`, `S.prevPlayer` | `player` | `{sector:{id,name}, object:{id,x,z,yaw,class,ic,rr,hull,shield,name}, target, guidance, where}` |
+| `S.player.gd` (v1.3) | `player` | mission guidance: `{k:"mission"\|"course", mid, n, ob, off?, rq?, th?, cut?, tn?, r:[{s,x,z,id,k:"g"\|"he"\|"hx"}], t:{id,s,x,z,n,c,in:{id,n,c},nk}}` – the game's route (MD get_global_path); read it with `guidanceModel()` (mapstyle.js) |
 | `S.liveGalaxy` | `init.galaxy`, `galaxy.clusters` | raw known clusters `[{id,name,macro,x,z,sectors:[{id,name,macro,owner,x,z,res}]}]` |
 | `S.sectors`, `S.clusters`, `S.links`, `S.stubs`, `S.gatesBySector` | derived | build them with `galaxyIndex()` from `mapstyle.js` (same as `app.js rebuildGalaxy/rebuildLinks`) |
 | `S.scans` | `init.sectors`, `sector` | `{ [sid]: {objs:[…], n, hidden} }` |
@@ -149,6 +151,14 @@ returns their rectangles (tests use it).
   contested dashed); resource areas are drawn under everything (layer `resources`, default on).
 * Ship icons rotate only with the "Ship heading" layer (`headingOf`, default `headingFromYaw`: yaw in
   radians, clockwise from north/+z; verified against live movement, see `tests/test_mapstyle.mjs`).
+* Mission guidance (v1.3, layer `lines` "Routes and orders"): the route the game's path finder returned
+  (bridge `player.gd`), from the player's drawn position (every frame) through this sector's route points
+  (local highway entry / exit, the next hop's gate) to the target or the next hop; solid, 2 px,
+  `missioncolor`, above resource areas / highways, below the icons; diamond marker at the target; label
+  "objective · N km" or "→ next · target sector, N jumps"; hover = tooltip, click on the marker = select the
+  target. Galaxy view and mini galaxy: the same route through each hop's gate positions, target sector
+  outlined. Old bridge (only `player.guidance`): a straight line only to a target in the player's own sector,
+  never a guessed route. Pure helpers: `guidanceModel(S)`, `guidanceRuns(model, sid, from)` (mapstyle.js).
 * Galaxy view: one flat-top hexagon per cluster (radius = the cluster grid edge, 1e7 m) with an
   owner-coloured outline; sectors: 1 → fills it, 2–3 → half-radius hexagons whose outer vertex is a
   cluster vertex (corners nobody occupies stay black), 4–7 → third-radius hex flower. `clusterLayout()`

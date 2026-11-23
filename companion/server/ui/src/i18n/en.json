@@ -427,6 +427,19 @@
     "offers_title": "Offers",
     "time_left_v": "time left: {{v}}"
   },
+  "guidance": {
+    "title": "Guidance",
+    "course": "Plotted course",
+    "off": "Guidance is switched off for this mission",
+    "pending": "route being computed",
+    "jumps": "{{n}} jumps",
+    "jumps_one": "1 jump",
+    "unknown": "target in undiscovered space",
+    "cut": "route beyond not known",
+    "in": "in {{name}}",
+    "show": "Show on map",
+    "show_tip": "Centre the map on the guidance target (the galaxy view when only the route or the target's sector is known)"
+  },
   "factions": {
     "c_faction": "Faction",
     "c_relation": "Relation",

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Mission guidance route for x4_companion (v1.3). The game's map draws mission guidance natively (the
+     holomap renderer, menu_map.lua:28377 SetMapRenderMissionGuidance); the UI Lua has no function that
+     returns the guidance path. MD has the same path finder the guidance uses: aiscripts\move.autopilot.xml
+     :296-311 ("changes to path finding logic here need to be kept consistent with guidance code") -
+     get_global_path from the ship to the target, local highways unless the ship is a capital ship, known
+     sectors first and, when no known path exists, the full path (Lua then cuts it at the first unknown gate,
+     as conversations.xml:371 says: "if the next sector on the way to the active mission objective is
+     unknown, mission guidance is not shown"). player.activemissionwaypoint (scriptproperties.xml:2445) is
+     the game's own next hop ("waypoint (highway or gate) to next sector for the current objective of the
+     active mission"); it is handed over as well so Lua can report whether both agree.
+
+     On request from Lua (AddUITriggeredEvent("x4companion", "guidance", target) - a component as the third
+     value like menu_map.lua:4000) MD writes the expanded path (gates with their exit gate, highways as entry
+     + exit gate, everything else as is) and the waypoint on the player's blackboard and raises ONE Lua event;
+     Lua reads and clears them (same hand-over as md\x4_companion_gates.xml). GuidanceCleanup removes them
+     after 5 s in any case, so nothing stays in a save. Without a target only the waypoint is reported. -->
+<mdscript name="X4Companion_Guidance" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="md.xsd">
+  <cues>
+    <cue name="GuidanceRequest" instantiate="true">
+      <conditions>
+        <event_ui_triggered screen="'x4companion'" control="'guidance'" />
+      </conditions>
+      <actions>
+        <set_value name="$Target" exact="event.param3" />
+        <set_value name="$From" exact="player.ship" />
+        <do_if value="not $From">
+          <set_value name="$From" exact="player.entity" />
+        </do_if>
+        <set_value name="$Local" exact="true" />
+        <do_if value="$From.isclass.ship">
+          <do_if value="$From.iscapitalship">
+            <set_value name="$Local" exact="false" />
+          </do_if>
+        </do_if>
+        <set_value name="$Known" exact="1" />
+        <create_list name="$Path" />
+        <create_list name="$Out" />
+        <do_if value="$Target and @$Target.exists">
+          <get_global_path component="$Path" multiple="true" uselocalhighways="$Local" refobject="$From" useknownpath="true">
+            <start object="$From" />
+            <end object="$Target" />
+          </get_global_path>
+          <do_if value="not $Path.count">
+            <set_value name="$Known" exact="0" />
+            <get_global_path component="$Path" multiple="true" uselocalhighways="$Local" refobject="$From" useknownpath="false">
+              <start object="$From" />
+              <end object="$Target" />
+            </get_global_path>
+          </do_if>
+          <do_all exact="$Path.count" counter="$i">
+            <set_value name="$C" exact="$Path.{$i}" />
+            <do_if value="$C.isclass.highway">
+              <do_if value="@$C.entry">
+                <append_to_list name="$Out" exact="$C.entry" />
+              </do_if>
+              <do_if value="@$C.exit">
+                <append_to_list name="$Out" exact="$C.exit" />
+              </do_if>
+            </do_if>
+            <do_elseif value="$C.isclass.gate">
+              <append_to_list name="$Out" exact="$C" />
+              <do_if value="@$C.exit">
+                <append_to_list name="$Out" exact="$C.exit" />
+              </do_if>
+            </do_elseif>
+            <do_else>
+              <append_to_list name="$Out" exact="$C" />
+            </do_else>
+          </do_all>
+        </do_if>
+        <set_value name="player.entity.$x4companion_gdpath" exact="$Out" />
+        <set_value name="player.entity.$x4companion_gdinfo" exact="[$Known, $Path.count]" />
+        <!-- a highway waypoint is handed over as its entry gate (the gate is what the map shows in this sector) -->
+        <set_value name="$WP" exact="player.activemissionwaypoint" />
+        <do_if value="$WP">
+          <do_if value="$WP.isclass.highway">
+            <set_value name="$WP" exact="@$WP.entry" />
+          </do_if>
+        </do_if>
+        <set_value name="player.entity.$x4companion_gdwp" exact="$WP" />
+        <raise_lua_event name="'x4companion.guidance'" param="$Out.count" />
+      </actions>
+      <cues>
+        <cue name="GuidanceCleanup">
+          <delay exact="5s" />
+          <actions>
+            <remove_value name="player.entity.$x4companion_gdpath" />
+            <remove_value name="player.entity.$x4companion_gdinfo" />
+            <remove_value name="player.entity.$x4companion_gdwp" />
+          </actions>
+        </cue>
+      </cues>
+    </cue>
+  </cues>
+</mdscript>

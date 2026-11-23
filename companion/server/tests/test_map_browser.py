@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")      # check texts may hold map labels ("→")
+except (AttributeError, ValueError):
+    pass
 sys.path.insert(0, str(HERE))
 from cdp import Browser, find_browser  # noqa: E402
 

@@ -1,6 +1,9 @@
 // Missions: accepted missions (active first) + mission offers.
 import { useRef } from "react";
-import { Flag, Navigation } from "lucide-react";
+import { Crosshair, Flag, Navigation } from "lucide-react";
+import { guidanceModel } from "@web/mapstyle.js";
+import { showGuidanceOnMap } from "@/core/mapHost";
+import { guidanceSummary } from "@/lib/info";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -14,8 +17,11 @@ import { cn } from "@/lib/utils";
 
 export function MissionsPanel() {
   const { t, f } = useT();
-  useBus(["missions", "galaxy", "factions", "control"], 500);
+  useBus(["missions", "galaxy", "factions", "control", "player"], 500);
   const box = useRef<HTMLDivElement | null>(null);
+  // v1.3: the active mission's guidance (where its target is, "show on map")
+  const gm = guidanceModel(S);
+  const gsum = guidanceSummary(gm, (k, v) => t(k, v as never) as unknown as string, sectorName);
   const ms = [...S.missions].sort((a, b) => (b.act ? 1 : 0) - (a.act ? 1 : 0));
   const offers = [...S.offers].sort((a, b) => (toNum(b.rw) || 0) - (toNum(a.rw) || 0));
   const keys = [...ms.map((m) => "m" + m.id), ...offers.map((o) => "o" + o.id)];
@@ -45,6 +51,18 @@ export function MissionsPanel() {
                   <span className="truncate text-xs text-muted-foreground">{joinParts([text(m.st) ?? text(m.mt), m.fa ? factionName(m.fa) : null])}</span>
                 </div>
                 {text(m.ob) && <div className="mt-0.5 truncate text-gold" title={m.ob + prog}>▸ {m.ob}{prog}</div>}
+                {gsum && gm && gm.mid === String(m.id) && (
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs" data-guidance={m.id}>
+                    <Crosshair className="size-3 shrink-0 text-gold" />
+                    <span className="min-w-0 truncate text-foreground/85" title={gsum.text}>{gsum.text}</span>
+                    {gsum.canShow && (
+                      <Button size="sm" variant="default" className="ml-auto h-6 shrink-0 gap-1 px-2 text-xs" title={t("guidance.show_tip")}
+                        data-guidance-show={m.id} onClick={(ev) => { ev.stopPropagation(); showGuidanceOnMap(); }}>
+                        <Crosshair className="size-3" />{t("guidance.show")}
+                      </Button>
+                    )}
+                  </div>
+                )}
                 <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-foreground/75">
                   {reward && <span>{t("missions.reward", { v: reward })}</span>}
                   {left && <span>{t("missions.time_left_v", { v: left })}</span>}

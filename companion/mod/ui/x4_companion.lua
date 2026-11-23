@@ -6,6 +6,9 @@ the game map's own colours in a "theme" message, plotted course + autopilot targ
 points of a selected own ship), gate list via the player's blackboard (one event instead of one
 per gate), cost measurement that works without QueryPerformanceCounter (engine-call count "ops").
 
+v1.3: mission guidance - the active mission's (or plotted course's) target and the route the game's path
+finder computes (MD get_global_path, md\x4_companion_guidance.xml) as "gd" in the player message.
+
 Streams game data to the local companion server (tools\x4companion) as one JSON object per
 pipe message ("\n"-terminated) through the SirNukes Mod Support APIs named pipe
 \\.\pipe\x4companion, and reads a small, allow-listed set of commands back from the same pipe.
@@ -82,7 +85,7 @@ local C = rawget(_G, "__X4COMPANION_TEST_C") or ffi.C
 local K = ffi.C   -- Windows kernel32 (QueryPerformanceCounter) - not a game function
 
 local MOD = "x4_companion"
-local VERSION = "110"
+local VERSION = "130"   -- v1.3: mission guidance ("gd" in the player message)
 
 -------------------------------------------------------------------------------
 -- ffi declarations: only what is still missing. Vanilla menus declare all of these
@@ -154,6 +157,9 @@ deffn("uint32_t GetMessages(MessageInfo* result, uint32_t resultlen, size_t star
 deffn("uint32_t GetNumCurrentMissionOffers(bool showninbbs);")
 deffn("uint32_t GetCurrentMissionOffers(uint64_t* result, uint32_t resultlen, bool showninbbs);")
 deffn("uint64_t GetActiveMissionID();")
+-- v1.3 mission guidance: declared by vanilla menu_missionbriefing.lua:71 (identical text), not called by any
+-- vanilla Lua - its index base and range are probed (see guidance below), every call inside pcall
+deffn("UniverseID GetMissionIDObjectiveTarget(uint64_t missionid, size_t targetIndex);")
 deffn("RelationRangeInfo GetUIRelationName(const char* fromfactionid, const char* tofactionid);")
 deffn("uint32_t GetNumTransactionLog(UniverseID componentid, double starttime, double endtime);")
 deffn("uint32_t GetTransactionLog(TransactionLogEntry* result, uint32_t resultlen, UniverseID componentid, double starttime, double endtime);")
@@ -811,6 +817,185 @@ end
 -- Channel: player
 
 local missionNames = {}   -- mission id -> name (filled by the missions channel)
+local missionInfo = {}    -- v1.3: mission id -> { n, mt (main type), ob (objective), dg (guidance disabled) }
+
+-------------------------------------------------------------------------------
+-- v1.3 mission guidance: what the game map draws natively as the guidance line of the active mission (or
+-- of a plotted course). The 9.00 UI Lua has no function that returns that line; the holomap renders it
+-- itself (menu_map.lua:28377 SetMapRenderMissionGuidance, :27898 GetPickedMapMission). What we can read:
+--   target:  GetActiveGuidanceMissionComponent() for a plotted course (menu_map.lua:29546), and for a mission
+--            GetMissionIDObjectiveTarget(mission, index) (declared in menu_missionbriefing.lua:71, never called
+--            by vanilla: index base probed once per mission, up to GD_MAX targets, inside pcall);
+--   route:   MD get_global_path - the path finder the guidance uses (aiscripts\move.autopilot.xml:296-311),
+--            via md\x4_companion_guidance.xml (blackboard hand-over like the gate list), plus the game's own
+--            next hop player.activemissionwaypoint;
+--   off:     GetMissionDetails' disableguidance (missions channel).
+-- Discovery: a mission target is shown even when the player has not discovered the object itself
+-- (set_objective checkunknown defaults to false, md.xsd), but never in an undiscovered sector, and the route
+-- stops at the first unknown gate / sector (set_objective showunknownpath defaults to false; conversations.xml
+-- :371 "if the next sector on the way to the active mission objective is unknown, mission guidance is not
+-- shown") - nothing behind it is sent.
+-- Cost: the route is asked from MD only when the mission / its target / the player's sector / docking
+-- changes, when its objective text changes, and every GD_REFRESH s while guidance is on; per player pass
+-- 3 engine calls for the target's live position, the targets are probed once a second.
+local GD_MAX, GD_REFRESH, GD_PROBE = 8, 10, 1.0
+local GD = { sig = nil, route = nil, cut = false, known = nil, wp = 0, due = nil, probe_at = -1e9, pmid = nil,
+             targets = {}, base = nil, base_mid = nil, nreq = 0, nrx = 0, tcache = {}, kind = nil }
+local SPACE_OBJ = { station = true, gate = true, highwayentrygate = true, highwayexitgate = true, zone = true, sector = true,
+                    satellite = true, navbeacon = true, resourceprobe = true, mine = true, lasertower = true,
+                    lockbox = true, collectablewares = true, asteroid = true, datavault = true, buildstorage = true,
+                    ship_xs = true, ship_s = true, ship_m = true, ship_l = true, ship_xl = true, spacesuit = true }
+local function objectiveTarget(mid, idx) return C.GetMissionIDObjectiveTarget(mid, idx) end
+local function objectiveTargets(am)
+    if GD.base_mid ~= am then
+        -- index base: vanilla's other objective-index function is 1-based (GetMissionObjectiveStep3,
+        -- menu_map.lua:28144-28145); probe 0 once per mission so a 0-based list is not missed
+        GD.base_mid = am
+        GD.base = (to64(S("gd.target", objectiveTarget, am, 0)) ~= 0) and 0 or 1
+    end
+    local out = {}
+    for i = GD.base, GD.base + GD_MAX - 1 do
+        local t = to64(S("gd.target", objectiveTarget, am, i))
+        if t == 0 then break end
+        out[#out + 1] = t
+    end
+    return out
+end
+-- the target as the map shows it: own position, or - for something inside a station / ship (room, NPC,
+-- terminal) - the position of that container (the map has no interiors); nil = gone, {hidden=true} = in an
+-- undiscovered sector (nothing else about it leaves the bridge)
+local function gdTarget(t, now)
+    if t == 0 or not S("c.valid", IsValidComponent, t) then return nil end
+    local c = GD.tcache[t]
+    if not c or (now - c.at) > 2 or now < c.at then
+        c = { at = now, cls = className(t) }
+        if c.cls ~= "sector" and not SPACE_OBJ[c.cls] then
+            local cont = to64(S("gd.cont", C.GetContextByClass, t, "container", false))
+            if cont ~= 0 and cont ~= t then c.cont = cont; c.cname = knownName(cont); c.ccls = className(cont) end
+        end
+        if c.cls ~= "sector" and c.cls ~= "zone" then
+            -- not discovered by the player: still shown (a mission target), but without its name
+            c.unknown = S("gd.known", GetComponentData, t, "isknown") ~= true
+            if not c.unknown then c.name = knownName(t) end
+        end
+        GD.tcache = { [t] = c }
+    end
+    local sec = c.cls == "sector" and t or sectorOf(c.cont or t)
+    if not sectorKnown(sec, now) then return { hidden = true, s = sec } end
+    local r = { id = idstr(t), c = c.cls, s = idstr(sec), n = c.name, nk = c.unknown or nil }
+    if c.cls ~= "sector" then
+        local x, _, z = posOf(c.cont or t)
+        r.x, r.z = x, z
+    end
+    if c.cont then r["in"] = { id = idstr(c.cont), n = c.cname, c = c.ccls } end
+    return r, sec
+end
+-- MD reply (md\x4_companion_guidance.xml): the expanded path components in order, [known, n], waypoint
+local GATE_K = { gate = "g", highwayentrygate = "he", highwayexitgate = "hx" }
+local function gdPoint(id, now)
+    local cls = className(id)
+    local k = GATE_K[cls]
+    if not k then return nil end
+    local sec = sectorOf(id)
+    if not sectorKnown(sec, now) then return false, "sector" end
+    if S("gd.gknown", GetComponentData, id, "isknown") == false then return false, "gate" end
+    local x, _, z = posOf(id)
+    return { s = idstr(sec), x = x, z = z, id = idstr(id), k = k }
+end
+local function onGuidance(_, n)
+    local pid = S("gd.pid", ConvertStringTo64Bit, tostring(C.GetPlayerID()))
+    if not pid then return end
+    local list = S("gd.bb", GetNPCBlackboard, pid, "$x4companion_gdpath")
+    local info = S("gd.bbi", GetNPCBlackboard, pid, "$x4companion_gdinfo")
+    local wp = S("gd.bbw", GetNPCBlackboard, pid, "$x4companion_gdwp")
+    S("gd.bbclear", SetNPCBlackboard, pid, "$x4companion_gdpath", nil)
+    S("gd.bbclear", SetNPCBlackboard, pid, "$x4companion_gdinfo", nil)
+    S("gd.bbclear", SetNPCBlackboard, pid, "$x4companion_gdwp", nil)
+    if type(list) ~= "table" and type(info) ~= "table" then return end   -- a duplicate event of the same frame
+    GD.nrx = GD.nrx + 1
+    local now = realtime()
+    local pts, cut = arr(), false
+    local tid = GD.targets[1] or 0
+    for _, comp in ipairs(type(list) == "table" and list or {}) do
+        local id = to64(comp)
+        if id ~= 0 and id ~= tid then
+            local p, why = gdPoint(id, now)
+            if p == false then
+                -- the next step leads into an undiscovered sector: the gate that leads there is not part of
+                -- the shown guidance either (the game shows no guidance towards an unknown next sector)
+                cut = true
+                if why == "sector" and pts[#pts] and (pts[#pts].k == "g" or pts[#pts].k == "he") then pts[#pts] = nil end
+                break
+            end
+            if p and not (pts[#pts] and pts[#pts].id == p.id) then pts[#pts + 1] = p end
+        end
+    end
+    GD.wp = to64(wp)
+    if #pts == 0 and not cut and GD.wp ~= 0 then
+        -- no path from MD (no target from the UI side): the game's own next hop at least
+        local p = gdPoint(GD.wp, now)
+        if p == false then cut = true elseif p then pts[1] = p end
+    end
+    GD.route, GD.cut = pts, cut
+    GD.known = type(info) == "table" and tonumber(info[1]) or nil
+    GD.wpok = nil
+    if GD.wp ~= 0 then
+        GD.wpok = false
+        for _, p in ipairs(pts) do if p.id == idstr(GD.wp) then GD.wpok = true; break end end
+    end
+    if CH.player then CH.player.next_due = 0 end
+end
+
+-- per player pass: decide what is guided, (re)request the route on a change, build the "gd" field
+local function guidanceField(now, am, gcomp, sec, dockedat)
+    local mid = am ~= 0 and idstr(am) or nil
+    local info = mid and missionInfo[mid] or nil
+    local kind
+    if am ~= 0 and info and info.mt == "guidance" then kind = "course"
+    elseif am ~= 0 then kind = "mission"
+    elseif gcomp ~= 0 then kind = "course"
+    end
+    if not kind then
+        GD.sig, GD.route, GD.targets, GD.kind = nil, nil, {}, nil
+        return nil
+    end
+    local gd = { k = kind, mid = mid, n = (info and info.n) or (mid and missionNames[mid]) or nil, ob = info and info.ob or nil }
+    if info and info.dg then
+        GD.sig, GD.route = nil, nil
+        gd.off = true          -- the mission has guidance disabled: the game draws no guidance line
+        return gd
+    end
+    if kind == "course" and gcomp ~= 0 then
+        GD.targets = { gcomp }
+    elseif am ~= 0 and (now >= GD.probe_at or now < GD.probe_at - GD_PROBE or GD.pmid ~= am) then
+        GD.probe_at, GD.pmid = now + GD_PROBE, am
+        GD.targets = objectiveTargets(am)
+    end
+    local tid = GD.targets[1] or 0
+    local t, tsec = gdTarget(tid, now)
+    local sig = kind .. ":" .. tostring(mid) .. ":" .. tid .. ":" .. tostring(sec) .. ":" .. tostring(tsec) .. ":" .. tostring(dockedat)
+    if sig ~= GD.sig then
+        -- mission / target / sector / docking changed: the old route is gone at once, a new one is asked for
+        GD.sig, GD.route, GD.cut, GD.due = sig, nil, false, now
+    end
+    if GD.due and now >= GD.due and W.connected then
+        GD.due = now + GD_REFRESH
+        GD.nreq = GD.nreq + 1
+        if tid ~= 0 then S("gd.request", AddUITriggeredEvent, "x4companion", "guidance", luaid(tid))
+        else S("gd.request", AddUITriggeredEvent, "x4companion", "guidance") end
+    end
+    if GD.route then
+        gd.r = GD.route
+        if GD.cut then gd.cut = true end
+    else
+        gd.rq = true           -- route asked from MD, not here yet: draw nothing rather than a wrong line
+    end
+    if t then
+        if t.hidden or GD.cut then gd.th = true else gd.t = t end
+    end
+    if #GD.targets > 1 then gd.tn = #GD.targets end
+    return gd
+end
 
 defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch, now)
     local pid = to64(S("p.id", C.GetPlayerID))
@@ -904,8 +1089,7 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
     -- plotted course (guidance) and autopilot target: GetActiveGuidanceMissionComponent()
     -- (menu_map.lua:29546, menu_interactmenu.lua:1129), GetAutoPilotTarget() (menu_map.lua:6734).
     -- Same visibility rule as everything else; position only when the target itself is visible.
-    local function routeTarget(tag, fn)
-        local t = to64(S(tag, fn))
+    local function routeTarget(tag, t)
         if t == 0 or not S("c.valid", IsValidComponent, t) then return nil end
         local tsec = S("c.issector", C.IsComponentClass, t, "sector") and t or sectorOf(t)
         if not sectorKnown(tsec, now) then return { unknown = true } end
@@ -921,8 +1105,9 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
         end
         return r
     end
-    m.guidance = routeTarget("p.guidance", GetActiveGuidanceMissionComponent)
-    m.autopilot = routeTarget("p.autopilot", GetAutoPilotTarget)
+    local gcomp = to64(S("p.guidance", GetActiveGuidanceMissionComponent))
+    m.guidance = routeTarget("p.guidance", gcomp)
+    m.autopilot = routeTarget("p.autopilot", to64(S("p.autopilot", GetAutoPilotTarget)))
 
     local st = S("p.target", C.GetSofttarget2)
     local tid = st and to64(st.softtargetID) or 0
@@ -936,6 +1121,8 @@ defchan("player", { every = 0.25, max = 1.0, budget = 0.05, start = function(ch,
     end
     local am = to64(S("p.mission", C.GetActiveMissionID))
     if am ~= 0 then m.mission = { id = idstr(am), name = missionNames[idstr(am)] } end
+    -- v1.3: the active mission's / plotted course's guidance (target + route as the game computes it)
+    m.gd = guidanceField(now, am, gcomp, sec, where.dockedid)
     m.watch = W.watch ~= 0 and idstr(W.watch) or nil
     send(m)
     return true
@@ -1745,14 +1932,21 @@ defchan("missions", { every = 3, max = 20, budget = 0.05, steps = 2,
             if missionID ~= nil then
                 local objtext, timeout, progressname, cur, max = S("mi.objective", GetMissionObjective, i)
                 local mid = idstr(missionID)
-                if mid then missionNames[mid] = name end
+                if mid then
+                    missionNames[mid] = name
+                    -- v1.3 guidance: type, objective and the guidance switch of the mission; a changed objective
+                    -- of the active mission asks for its target and route again at once
+                    local old = missionInfo[mid]
+                    if old and old.ob ~= objtext and GD.pmid == to64(missionID) then GD.due = 0; GD.probe_at = -1e9 end
+                    missionInfo[mid] = { n = name, mt = maintype, ob = objtext, dg = disableguidance and true or nil }
+                end
                 local assoc = to64(associatedcomponent)
                 local thread = to64(threadmissionid)
                 job.out[#job.out + 1] = { id = mid, n = name, d = description, diff = difficulty, mt = maintype,
                     st = subtypename, fa = faction, rw = reward, rt = rewardtext,
                     dur = round((timeout and timeout ~= -1) and timeout or missiontime, 0),
                     act = (job.active ~= nil and i == job.active) or nil, ab = abortable or nil,
-                    ob = objtext, pn = progressname, pc = cur, pm = max, al = alertlevel,
+                    ob = objtext, pn = progressname, pc = cur, pm = max, al = alertlevel, dg = disableguidance and true or nil,
                     th = thread ~= 0 and idstr(thread) or nil,
                     ac = assoc ~= 0 and idstr(assoc) or nil,
                     acs = (assoc ~= 0 and sectorKnown(sectorOf(assoc), now)) and idstr(sectorOf(assoc)) or nil }
@@ -1944,6 +2138,10 @@ defchan("stats", { every = 2, max = 2, budget = 1,
                bytes = W.nbytes, dropped = W.ndrop, wfail = W.nfail, cmds = W.ncmd,
                gates = W.gates_state, ngates = W.gates_n, gates_md = W.gates_md, gates_rx = W.gates_rx, gates_hw = W.gates_hw,
                hk = W.hk_registered, timer = TIMER, hires = HIRES,
+               -- v1.3 guidance diagnostics: route requests / MD replies, objective-target index base, number of
+               -- targets, whether the game's own next hop (activemissionwaypoint) is on the MD route, known path
+               gd = { req = GD.nreq, rx = GD.nrx, base = GD.base, nt = #GD.targets, wp = GD.wp ~= 0 and idstr(GD.wp) or nil,
+                      wpok = GD.wpok, known = GD.known, np = GD.route and #GD.route or nil, cut = GD.cut or nil },
                nframe = W.n_frame, nmd = W.n_md, watch = W.watch ~= 0 and idstr(W.watch) or nil })
         W.frame_ms_sum, W.frame_ms_max, W.frame_n, W.frame_ops_sum = 0, 0, 0, 0
         return true
@@ -2309,6 +2507,7 @@ local function init()
     pcall(RegisterEvent, "x4companion.mdTick", onMdTick)
     pcall(RegisterEvent, "x4companion.gates", onGates)
     pcall(RegisterEvent, "x4companion.sectorinfo", onSectorInfo)
+    pcall(RegisterEvent, "x4companion.guidance", onGuidance)        -- v1.3: md\x4_companion_guidance.xml
     -- v1.2: MD (x4_companion_gates.xml GateDiscovered) - a gate / highway entry was just discovered:
     -- re-collect the gate list now (at most once a second)
     pcall(RegisterEvent, "x4companion.gatesdirty", function()
@@ -2332,5 +2531,5 @@ if not okInit then pcall(DebugError, MOD .. ": init failed: " .. tostring(errIni
 if rawget(_G, "__X4COMPANION_TEST_C") then
     __X4COMPANION_TEST = { W = W, CH = CH, CFG = CFG, SRC = SRC, onFrame = onFrame, onMdTick = onMdTick,
                            onRead = onRead, json = json, utf8clean = utf8clean, registerHotkeys = registerHotkeys,
-                           onGates = onGates, TIMER = TIMER }
+                           onGates = onGates, TIMER = TIMER, GD = GD, onGuidance = onGuidance }
 end

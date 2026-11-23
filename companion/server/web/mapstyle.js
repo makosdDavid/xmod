@@ -442,6 +442,82 @@ export function overlayModes(w, h) {
 }
 
 // ---------------------------------------------------------------- shortest gate route (galaxy)
+// ---------------------------------------------------------------- v1.3 mission guidance
+// The guidance of the active mission / plotted course as the bridge reports it (player message "gd", see
+// dev\x4_companion\ui\x4_companion.lua guidanceField): the route is what the game's own path finder returned
+// (MD get_global_path - the guidance's path logic, aiscripts\move.autopilot.xml:296-311): an ordered list of
+// gates / highway entry and exit gates with their sector and position, already cut at the first unknown
+// gate. The old bridge (before v1.3) only reports a plotted course's target ("guidance": {id, s, x, z, n})
+// and no route at all: then only a target in the player's own sector gets a line (a straight one - nothing
+// else is known), a target elsewhere only its sector marked. Returns null when there is nothing to show.
+//   { kind: "mission"|"course", mid, name, ob, legacy, off, pending, hidden, cut, tn,
+//     pts: [{s, x, z, id, k}],         route points (k: g gate, he/hx highway entry/exit, t the target)
+//     target: {id, s, x, z, n, c, in, nk} | null, targetSid, sectors: [sid, ...] in route order from the
+//     player's sector, jumps: sector changes until the end of the known route (null = unknown) }
+const num = (v) => typeof v === "number" && Number.isFinite(v);
+export function guidanceModel(S) {
+  const p = S && S.player;
+  if (!p) return null;
+  const ps = p.sector && p.sector.id !== undefined && p.sector.id !== null ? String(p.sector.id) : null;
+  const gd = p.gd;
+  if (gd && typeof gd === "object") {
+    const base = { kind: gd.k === "course" ? "course" : "mission", mid: gd.mid ? String(gd.mid) : null, name: gd.n || null,
+                   ob: gd.ob || null, legacy: false, off: !!gd.off, pending: !!gd.rq, hidden: !!gd.th, cut: !!gd.cut, tn: gd.tn || 1 };
+    if (gd.off) return { ...base, pts: [], target: null, targetSid: null, sectors: [], jumps: 0 };
+    const pts = (Array.isArray(gd.r) ? gd.r : []).filter((q) => q && q.s !== undefined && q.s !== null && num(q.x) && num(q.z))
+      .map((q) => ({ s: String(q.s), x: q.x, z: q.z, id: q.id ? String(q.id) : null, k: q.k || "g" }));
+    const t = gd.t && gd.t.s !== undefined && gd.t.s !== null ? {
+      id: gd.t.id ? String(gd.t.id) : null, s: String(gd.t.s), x: num(gd.t.x) ? gd.t.x : null, z: num(gd.t.z) ? gd.t.z : null,
+      n: gd.t.n || null, c: gd.t.c || null, in: gd.t.in || null, nk: !!gd.t.nk } : null;
+    if (t && t.x !== null && !gd.rq) pts.push({ s: t.s, x: t.x, z: t.z, id: t.id, k: "t" });
+    const sectors = ps ? [ps] : [];
+    for (const q of pts) if (sectors[sectors.length - 1] !== q.s) sectors.push(q.s);
+    return { ...base, pts, target: t, targetSid: t ? t.s : null, sectors, jumps: Math.max(0, sectors.length - 1) };
+  }
+  const lg = p.guidance;
+  if (lg && !lg.unknown && lg.s !== undefined && lg.s !== null) {
+    const t = { id: lg.id ? String(lg.id) : null, s: String(lg.s), x: num(lg.x) ? lg.x : null, z: num(lg.z) ? lg.z : null, n: lg.n || null, c: null, in: null, nk: false };
+    const here = t.s === ps;
+    const pts = here && t.x !== null ? [{ s: t.s, x: t.x, z: t.z, id: t.id, k: "t" }] : [];
+    return { kind: "course", mid: null, name: null, ob: null, legacy: true, off: false, pending: false, hidden: false, cut: false, tn: 1,
+             pts, target: t, targetSid: t.s, sectors: here ? [ps] : [], jumps: here ? 0 : null };
+  }
+  return null;
+}
+
+// The part of the guidance drawn in sector sid (world coordinates): in the player's own sector it starts at
+// the player (from) and runs through the route points of this sector until the route leaves it; in any other
+// sector every run of route points inside it. Returns { runs: [[[x, z], ...], ...], end: {x, z, k, id,
+// next} | null } - end = where the shown guidance leaves this sector (the next hop's gate, next = the sector
+// behind it) or the target.
+export function guidanceRuns(model, sid, from) {
+  const out = { runs: [], end: null };
+  if (!model || model.off || model.pending || !sid) return out;
+  sid = String(sid);
+  const pts = model.pts;
+  const ps = model.sectors.length ? model.sectors[0] : null;
+  let i = 0;
+  if (from && sid === ps) {
+    const run = [[from[0], from[1]]];
+    while (i < pts.length && pts[i].s === sid) { run.push([pts[i].x, pts[i].z]); i++; }
+    if (run.length > 1) {
+      out.runs.push(run);
+      const last = pts[i - 1];
+      out.end = { x: last.x, z: last.z, k: last.k, id: last.id, next: i < pts.length ? pts[i].s : null };
+    }
+    return out;
+  }
+  while (i < pts.length) {
+    if (pts[i].s !== sid) { i++; continue; }
+    const run = [];
+    while (i < pts.length && pts[i].s === sid) { run.push([pts[i].x, pts[i].z]); i++; }
+    if (run.length > 1) out.runs.push(run);
+    const last = pts[i - 1];
+    out.end = { x: last.x, z: last.z, k: last.k, id: last.id, next: i < pts.length ? pts[i].s : null };
+  }
+  return out;
+}
+
 export function route(links, from, to) {
   if (!from || !to) return null;
   if (from === to) return [from];

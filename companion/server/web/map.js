@@ -17,7 +17,8 @@ import { loadSettings, saveSettings, factionColor } from "./util.js";
 import { clampScale, wheelFactor, applyBias, zoomAt, fitScale, pinchFactor } from "./camera.js";
 import { iconEl } from "./icons.js";
 import { objColor, holo, rgb, iconFor, iconSize, isShip, drawIcon, hexCellsInRange, radarCell, route,
-         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, isOwnerlessShip, OWNERLESS_COLOR, sectorHexApothem, hexRadiusOfApothem, hexPoints, RESOURCE_COLOR, resourceCategory, CLUSTER_R } from "./mapstyle.js";
+         headingFromYaw, galaxyGeometry, staticClusterIndex, insideHex, overlayModes, sectorMarkerSpots, isOwnerlessShip, OWNERLESS_COLOR, sectorHexApothem, hexRadiusOfApothem, hexPoints, RESOURCE_COLOR, resourceCategory, CLUSTER_R,
+         guidanceModel, guidanceRuns } from "./mapstyle.js";
 import { withFallback } from "./map-strings.js";
 
 const HEX = CLUSTER_R;           // cluster grid edge length (vanilla menu_mapeditor.lua:163)
@@ -588,6 +589,14 @@ export class MapView {
       for (const y of [5, 9]) { g2.beginPath(); g2.moveTo(1, y); g2.quadraticCurveTo(10, y - 4, 19, y); g2.stroke(); }
       box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend.highways"))));
     }
+    {
+      const cv = this.mk("canvas", { width: 22, height: 14 });
+      const g2 = cv.getContext("2d"), col = holo(th, "missioncolor");
+      g2.strokeStyle = rgb(col); g2.lineWidth = 2; g2.lineCap = "round";
+      g2.beginPath(); g2.moveTo(1, 11); g2.lineTo(9, 5); g2.lineTo(14, 7); g2.stroke();
+      missionMarker(g2, 17, 7, 4, col);
+      box.append(this.mk("span", { class: "lgi" }, cv, this.mk("span", {}, T("map.legend.guidance"))));
+    }
     box.append(this.mk("span", { class: "lgi" }, this.mk("span", { class: "swatch radar" }), this.mk("span", {}, T("map.legend.radar"))));
     this.legendBox.replaceChildren(this.mk("div", { class: "lgtitle" }, T("map.legend.title") + (th && !th.sim ? T("map.legend.gameColors") : T("map.legend.approx"))), box);
   }
@@ -1064,7 +1073,9 @@ export class MapView {
         T("map.follow", { name: who + (p && p.where ? " · " + this.whereText(p.where) : "") });
       cls = "on";
     } else if (this.cam === "focus") {
-      const o = this.objects().objs.find((x) => x.id === this.focusObj) || (S.property && S.property.get(this.focusObj)) || {};
+      const gm = guidanceModel(S);
+      const gt = gm && gm.target && gm.target.id === this.focusObj ? { n: gm.target.n || gm.ob } : null;
+      const o = this.objects().objs.find((x) => x.id === this.focusObj) || (S.property && S.property.get(this.focusObj)) || gt || {};
       text = T("map.selected", { name: (o.n || this.focusObj) + (this.viewSector ? " · " + this.sectorName(this.viewSector) : "") });
       cls = "focus";
     } else if (this.cam === "fit") {
@@ -1101,7 +1112,9 @@ export class MapView {
       if (!this.viewSector && has(p)) pts.push([p.x, p.z]);
     } else if (this.cam === "focus") {
       const f = objs.find((o) => o.id === this.focusObj && has(o));
+      const gf = f ? null : this.guidanceFocus(this.focusObj, sid);     // the guidance target ("show on map")
       if (f) { center = [f.x, f.z]; pts.push(center); }
+      else if (gf) { center = gf; pts.push(center); }
       else return null;
     } else if (!this.viewSector && has(p)) {
       center = [p.x, p.z];
@@ -1241,6 +1254,7 @@ export class MapView {
     // lines below the icons
     this._lineBoxes = [];
     this.lastResources = 0; this.lastHighways = 0;
+    this.gdHit = null; this.lastGuidance = null;
     if (this.cfg.resources !== false) this.drawResources(g, sid);
     if (this.cfg.highways !== false) this.drawHighways(g, sid);
     if (this.cfg.lines) this.drawLines(g, sid, objs, inPlayer);
@@ -1639,28 +1653,9 @@ export class MapView {
         g.restore();
       }
     }
+    // mission guidance / plotted course (v1.3): the game's route, see drawGuidance
+    this.drawGuidance(g, sid, objs, inPlayer, lbox);
     if (!pp) return;
-    // plotted course (guidance): to the target in this sector, or towards the gate on the route
-    const gd = S.player.guidance;
-    if (gd && !gd.unknown) {
-      const col = holo(th, "missioncolor");
-      let to = null, label = gd.n || T("map.route.plotted");
-      if (gd.s === String(sid) && gd.x !== undefined && gd.x !== null) to = this.toScreen(gd.x, gd.z);
-      else if (gd.s) {
-        const path = route(S.links || [], String(sid), String(gd.s));
-        if (path && path.length > 1) {
-          const gate = objs.find((o) => (o.c === "gate" || o.c === "highwayentrygate") && o.ds === path[1]);
-          if (gate) { to = this.toScreen(gate.x, gate.z); label = T("map.route.to", { sector: this.sectorName(gd.s), n: path.length - 1 }); }
-        }
-      }
-      if (to) {
-        g.save(); g.strokeStyle = rgb(col, 0.9); g.lineWidth = 2.2; g.setLineDash([10, 6]);
-        g.beginPath(); g.moveTo(pp[0], pp[1]); g.lineTo(to[0], to[1]); g.stroke(); g.restore();
-        g.strokeStyle = rgb(col); g.lineWidth = 2; g.beginPath(); g.arc(to[0], to[1], 9, 0, Math.PI * 2); g.stroke();
-        text(g, label, to[0] + 12, to[1] + 16, rgb(col), 12, true);
-        lbox(label, to[0] + 12, to[1] + 16, 12);
-      }
-    }
     // soft target
     const tg = S.player.target;
     if (tg && tg.x !== undefined && tg.x !== null && tg.sector === sid) {
@@ -1670,6 +1665,153 @@ export class MapView {
       text(g, this.fmtDist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, "rgba(255,255,255,0.85)", 11, true);
       lbox(this.fmtDist(tg.dist), (pp[0] + tx) / 2 + 6, (pp[1] + ty) / 2 - 6, 11);
     }
+  }
+
+  // Mission guidance / plotted course (v1.3, model: mapstyle.guidanceModel). Like the game map: the route the
+  // game's path finder computed (bridge "gd": gates, local highway entry / exit), not a straight line - from
+  // the player's drawn position (redrawn every frame with the marker) through this sector's route points to
+  // the target or to the next hop's gate; one solid line of constant 2 px screen width in the game map's
+  // mission colour (GetHoloMapColors missioncolor; the game has no separate guidance colour - colors.xml
+  // holomap_missiontarget = amber, the same value), above the sector background / resource areas / local
+  // highways, below the object icons. A mission-target marker at the target, a label at the end: the
+  // objective and the remaining distance, or "→ next sector · target sector, N jumps" at the next hop.
+  drawGuidance(g, sid, objs, inPlayer, lbox) {
+    const S = this.S;
+    const T = this.t;
+    const M = guidanceModel(S);
+    if (!M || M.off || M.pending) return;
+    const p = S.player && S.player.object;
+    const from = inPlayer && p && typeof p.x === "number" && typeof p.z === "number" ? [p.x, p.z] : null;
+    const { runs, end } = guidanceRuns(M, sid, from);
+    const col = holo(S.theme, "missioncolor");
+    const segs = [], screen = [];
+    g.save();
+    g.lineJoin = "round"; g.lineCap = "round";
+    for (const run of runs) {
+      const sp = run.map(([x, z]) => this.toScreen(x, z));
+      g.beginPath();
+      sp.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
+      g.strokeStyle = "rgba(0,0,0,0.55)"; g.lineWidth = 4; g.stroke();       // dark edge: readable on any background
+      g.strokeStyle = rgb(col); g.lineWidth = 2; g.stroke();
+      for (let k = 1; k < sp.length; k++) segs.push([sp[k - 1][0], sp[k - 1][1], sp[k][0], sp[k][1]]);
+      screen.push(sp);
+    }
+    g.restore();
+    let dist = null;                                   // along the drawn line, from the player to its end
+    if (from && runs.length) {
+      dist = 0;
+      const r = runs[0];
+      for (let k = 1; k < r.length; k++) dist += Math.hypot(r[k][0] - r[k - 1][0], r[k][1] - r[k - 1][1]);
+    }
+    const t = M.target;
+    let marker = null;
+    if (t && !M.hidden && t.s === String(sid) && t.x !== null) {
+      const [x, y] = this.toScreen(t.x, t.z);
+      const ob = objs.find((o) => o.id === t.id || (t.in && o.id === t.in.id));
+      const r = Math.max(9, (ob ? iconSize(ob, this.cfg.iconscale || 1) / 2 : 6) + 5);
+      missionMarker(g, x, y, r, col);
+      marker = { x, y, r: r + 3 };
+    }
+    let label = null, lx = 0, ly = 0;
+    const name = M.ob || (t && t.n) || (M.kind === "course" ? T("map.route.plotted") : T("map.gd.mission"));
+    if (end) {
+      const [ex, ey] = this.toScreen(end.x, end.z);
+      lx = ex + 14; ly = ey + 18;
+      if (end.k === "t") label = dist !== null ? T("map.gd.label", { ob: name, dist: this.fmtKmAlways(dist) }) : name;
+      else {
+        const gate = objs.find((o) => o.id === end.id);
+        const next = end.next || (gate && gate.ds) || null;
+        const nextName = next ? this.sectorName(next) : T("map.unknown");
+        if (M.hidden || M.cut || !M.targetSid) label = T("map.gd.hop.open", { next: nextName });
+        else label = T(M.jumps === 1 ? "map.gd.hop.one" : "map.gd.hop", { next: nextName, target: this.sectorName(M.targetSid), n: M.jumps });
+      }
+    } else if (marker) {
+      label = name; lx = marker.x + 14; ly = marker.y + 18;      // the target in a watched sector, no player line
+    }
+    if (label) {
+      g.font = `12px ${FONT}`;
+      const w = g.measureText(label).width;
+      if (lx + w > this.w - 6) lx = Math.max(6, lx - w - 28);
+      g.fillStyle = "rgba(2,6,14,0.7)"; roundRect(g, lx - 4, ly - 13, w + 8, 18, 3); g.fill();
+      text(g, label, lx, ly, rgb(col), 12, true);
+      lbox(label, lx, ly, 12);
+    }
+    const tip = [M.name || (M.kind === "course" ? T("map.route.plotted") : null), M.ob, t && !M.hidden && t.n && t.n !== M.ob ? t.n : null,
+                 t && t.in && t.in.n ? T("map.gd.inside", { name: t.in.n }) : null,
+                 dist !== null ? this.fmtKmAlways(dist) : null].filter(Boolean).join(" · ");
+    this.gdHit = { segs, marker, tip, target: t && !M.hidden ? t : null };
+    this.lastGuidance = { sid: String(sid), runs: screen, world: runs, end, label, dist, marker, color: col, model: M };
+  }
+  fmtKmAlways(m) {
+    return new Intl.NumberFormat(this.t("map.locale"), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(m / 1000) + " km";
+  }
+  // the guidance target (if it is the object to focus on and lies in the shown sector): world position
+  guidanceFocus(id, sid) {
+    const M = guidanceModel(this.S);
+    const t = M && !M.off && !M.hidden ? M.target : null;
+    return t && t.id === id && t.s === String(sid) && t.x !== null ? [t.x, t.z] : null;
+  }
+  // "show on map" for the active guidance (Missions / Details): the target in its sector (focus camera, the
+  // zoom stays as it is), or the galaxy view when only the route / the target's sector is known
+  showGuidance() {
+    const M = guidanceModel(this.S);
+    if (!M || M.off) return false;
+    const t = M.target;
+    const ps = this.S.player && this.S.player.sector ? String(this.S.player.sector.id) : null;
+    if (t && !M.hidden && t.x !== null) {
+      this.viewSector = t.s === ps ? null : t.s;
+      this.watch(this.viewSector);
+      if (this.mode !== "sector") this.setMode("sector");
+      this.cam = "focus"; this.focusObj = t.id; this.manualUntil = 0; this.zoomBias = 1; this.saveCam();
+      this.lastInteract = performance.now(); this.dirty = true;
+      this.emit("mapsector", t.s);
+      return true;
+    }
+    if (M.targetSid || M.pts.length) {
+      if (this.mode !== "galaxy") this.setMode("galaxy");
+      this.viewSector = null; this.watch(null); this.cam = "follow"; this.dirty = true;
+      return true;
+    }
+    return false;
+  }
+  // galaxy-view polyline of the guidance (galaxy coordinates): the player, then every route point mapped
+  // into its sector's hexagon (gateGalaxyPos), so the line runs through the actual gate positions
+  galaxyGuidance(M) {
+    if (!M || M.off || M.pending) return null;
+    const S = this.S;
+    const p = S.player && S.player.object;
+    const ps = M.sectors[0] || null;
+    const line = [];
+    if (ps && p && typeof p.x === "number" && this.geo().sectors.get(ps)) line.push(this.gateGalaxyPos(ps, p));
+    for (const q of M.pts) if (this.geo().sectors.get(q.s)) line.push(this.gateGalaxyPos(q.s, q));
+    return line;
+  }
+  drawGalaxyGuidance(g, M, tx, ty, lw, mini = false) {
+    const line = this.galaxyGuidance(M);
+    const col = holo(this.S.theme, "missioncolor");
+    const out = { line: [], target: null };
+    if (!line) return out;
+    if (line.length > 1) {
+      const sp = line.map(([x, z]) => [tx(x), ty(z)]);
+      g.save(); g.lineJoin = "round"; g.lineCap = "round";
+      g.beginPath(); sp.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y)));
+      if (!mini) { g.strokeStyle = "rgba(0,0,0,0.55)"; g.lineWidth = lw + 2; g.stroke(); }
+      g.strokeStyle = rgb(col); g.lineWidth = lw; g.stroke();
+      g.restore();
+      out.line = sp;
+    }
+    const ts = M.hidden ? null : M.targetSid;
+    const gs = ts ? this.geo().sectors.get(ts) : null;
+    if (gs) {
+      const k = Math.abs(tx(gs.x + gs.r) - tx(gs.x));
+      g.save(); g.strokeStyle = rgb(col); g.lineWidth = mini ? 1.5 : 2.5; hexPath(g, tx(gs.x), ty(gs.z), k * 0.94); g.stroke(); g.restore();
+      if (M.target && M.target.x !== null) {
+        const [wx, wz] = this.gateGalaxyPos(ts, M.target);
+        missionMarker(g, tx(wx), ty(wz), mini ? 4 : 7, col);
+        out.target = [tx(wx), ty(wz)];
+      }
+    }
+    return out;
   }
 
   drawGrid(g) {
@@ -1739,6 +1881,12 @@ export class MapView {
       const x = tx(cg.x), y = ty(cg.z);
       g.save(); g.setLineDash([3, 3]); g.strokeStyle = "#ffffff"; g.lineWidth = 2; hexPath(g, x, y, cg.r * sc); g.stroke(); g.restore();
       if (String(sid) === ps) { g.fillStyle = "#ffffff"; g.beginPath(); g.arc(x, y, 3, 0, Math.PI * 2); g.fill(); }
+    }
+    // v1.3: the guidance route, the same as in the galaxy view
+    this.lastMiniGuidance = null;
+    if (this.cfg.lines) {
+      const M = guidanceModel(S);
+      if (M && !M.off) this.lastMiniGuidance = this.drawGalaxyGuidance(g, M, tx, ty, 1.6, true);
     }
     g.restore();
     text(g, cur.name, X + 8, Y + 15, "rgba(220,232,245,0.9)", 11, true);
@@ -1818,23 +1966,15 @@ export class MapView {
       g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke(); g.setLineDash([]);
       text(g, "?", x2 - 3, y2 + 4, "rgba(235,242,255,0.8)", 13, true);
     }
-    // 4. plotted route
+    // 4. mission guidance / plotted course (v1.3): the game's route through the actual gate positions of each
+    //    hop, the target sector outlined, the target marked (layer "Routes and orders")
     const ps = S.player && S.player.sector ? String(S.player.sector.id) : null;
-    const gd = S.player && S.player.guidance;
-    if (this.cfg.lines && gd && gd.s && ps) {
-      const path = route(S.links || [], ps, String(gd.s));
-      if (path && path.length > 1) {
-        g.save(); g.strokeStyle = rgb(holo(S.theme, "missioncolor"), 0.95); g.lineWidth = 3.5; g.setLineDash([12, 7]);
-        g.beginPath();
-        let first = true;
-        for (const sid of path) {
-          const s = this.sectorGeo(sid);
-          if (!s) continue;
-          const [x, y] = this.toScreen(s.x, s.z);
-          if (first) g.moveTo(x, y); else g.lineTo(x, y);
-          first = false;
-        }
-        g.stroke(); g.restore();
+    this.lastGalaxyGuidance = null;
+    if (this.cfg.lines) {
+      const M = guidanceModel(S);
+      if (M && !M.off) {
+        const r = this.drawGalaxyGuidance(g, M, (x) => this.toScreen(x, 0)[0], (z) => this.toScreen(0, z)[1], 2.5);
+        this.lastGalaxyGuidance = { line: r.line, target: r.target, targetSid: M.hidden ? null : M.targetSid, sectors: M.sectors };
       }
     }
     // 5. system edge: the cluster outline in the owner's colour (majority of its known sectors)
@@ -1936,6 +2076,7 @@ export class MapView {
       o = this.pick(sx, sy);
       if (o) label = (o.n || this.className(o.c) || "?") + (o.code ? ` (${o.code})` : "") + (o.pl ? T("map.tip.own") : isOwnerlessShip(o) ? T("map.tip.ownerless") : o.o ? " · " + this.factionName(o.o) : "") +
         (o.hull !== undefined && o.hull !== null ? T("map.tip.hull", { n: this.fmtNum(o.hull) }) : "");
+      if (!o && this.guidanceAt(sx, sy)) { o = { id: "x4c-guidance" }; label = this.gdHit.tip; }
       if (!o && this.cfg.resources !== false) {
         const [wx, wz] = this.toWorld(sx, sy);
         const rs = this.resourcesAt(this.currentSid(), wx, wz);
@@ -1962,11 +2103,41 @@ export class MapView {
       return;
     }
     const best = this.pick(sx, sy);
-    if (best) this.select({ kind: "obj", id: best.id, from: "map", obj: best, sid: this.currentSid() });
+    if (best) { this.select({ kind: "obj", id: best.id, from: "map", obj: best, sid: this.currentSid() }); return; }
+    // the guidance target marker: select the target (Details shows it)
+    const gt = this.guidanceAt(sx, sy) === "marker" ? this.gdHit.target : null;
+    if (gt && gt.id) {
+      const M = guidanceModel(this.S);
+      this.select({ kind: "obj", id: gt.id, from: "map", sid: gt.s,
+                    obj: { id: gt.id, c: gt.c || "object", n: gt.n || (M && M.ob) || this.t("map.gd.target"), x: gt.x, z: gt.z, mt: true, s: gt.s } });
+    }
+  }
+  // what of the guidance is under a screen point: "marker" / "line" / null
+  guidanceAt(sx, sy) {
+    const h = this.gdHit;
+    if (!h) return null;
+    if (h.marker && Math.hypot(h.marker.x - sx, h.marker.y - sy) <= h.marker.r + 2) return "marker";
+    for (const [x1, y1, x2, y2] of h.segs) {
+      const dx = x2 - x1, dy = y2 - y1, L = dx * dx + dy * dy;
+      const k = L ? Math.max(0, Math.min(1, ((sx - x1) * dx + (sy - y1) * dy) / L)) : 0;
+      if (Math.hypot(x1 + k * dx - sx, y1 + k * dy - sy) <= 5) return "line";
+    }
+    return null;
   }
 }
 
 // ---------------------------------------------------------------- drawing helpers
+// Mission guidance target marker: a diamond in the mission colour around the target (dark edge underneath),
+// a dot in the middle. (The game's own holomap marker is drawn natively and not readable from the UI Lua;
+// this keeps its colour - holomap_missiontarget = missioncolor - and stays clear of the object's icon.)
+export function missionMarker(g, x, y, r, col) {
+  g.save();
+  const dia = () => { g.beginPath(); g.moveTo(x, y - r); g.lineTo(x + r, y); g.lineTo(x, y + r); g.lineTo(x - r, y); g.closePath(); };
+  dia(); g.strokeStyle = "rgba(0,0,0,0.6)"; g.lineWidth = 4; g.stroke();
+  dia(); g.strokeStyle = rgb(col); g.lineWidth = 2; g.stroke();
+  g.fillStyle = rgb(col); g.beginPath(); g.arc(x, y, Math.max(1.5, r * 0.18), 0, Math.PI * 2); g.fill();
+  g.restore();
+}
 // Abandoned (ownerless) ship marker: a dark halo + dashed chartreuse ring that slowly turns and
 // breathes (still with prefers-reduced-motion) and an "abandoned" badge right of it. Unlike the
 // player's solid white rings, the white selection brackets and amber mission colour. Returns the

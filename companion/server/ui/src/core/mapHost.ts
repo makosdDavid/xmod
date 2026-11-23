@@ -62,6 +62,15 @@ function ensure(): Parts {
 
 export function getMap(): MapView | null { return view; }
 
+/** "show on map" for the active mission guidance: the map view (sector or galaxy, as the map decides) */
+export function showGuidanceOnMap(): boolean {
+  ensure();
+  if (!view || !view.showGuidance) return false;
+  const ok = view.showGuidance();
+  if (ok) setView(view.mode === "galaxy" ? "galaxy" : "map");
+  return ok;
+}
+
 /** sector the map currently shows (falls back to the player's sector when no map is on screen) */
 export function mapSid(): string | null {
   if (view && attached > 0) return view.currentSid();

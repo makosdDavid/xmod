@@ -122,6 +122,26 @@ for (const [lang, dict] of [["en", en], ["hu", hu]] as const) {
       check(empty);
       expect(empty.rows).toEqual([]);
     });
+    it("v1.3 guidance: where the target is + show on map; off / hidden / none", () => {
+      const pl = (gd: unknown) => ({ ...mkS().player, gd });
+      const cross = mkS({ player: pl({ k: "mission", mid: "7", n: "Amongst the Argon", ob: "Hack: Repair Terminal",
+        r: [{ s: "1", x: 0, z: 0, id: "202", k: "g" }, { s: "2", x: 5, z: 5, id: "203", k: "g" }],
+        t: { id: "400", s: "2", x: 100, z: 200, n: "Repair Terminal", c: "room", in: { id: "401", n: "Wharf" } } }) });
+      const m = buildInfo(base(cross), null, undefined);
+      check(m);
+      const row = m.rows.find((r) => r.key === "guidance");
+      expect(row && row.value.kind === "text" && row.value.text).toMatch(/Repair Terminal.*Wharf.*Second.*1/);
+      expect(m.buttons.find((b) => b.local === "guidance")).toBeTruthy();
+      const off = buildInfo(base(mkS({ player: pl({ k: "mission", mid: "7", off: true }) })), null, undefined);
+      check(off);
+      expect(off.buttons.find((b) => b.local === "guidance")).toBeUndefined();
+      expect(off.rows.find((r) => r.key === "guidance")).toBeTruthy();
+      const hidden = buildInfo(base(mkS({ player: pl({ k: "mission", mid: "7", th: true, cut: true, r: [] }) })), null, undefined);
+      check(hidden);
+      expect(JSON.stringify(hidden.rows)).not.toMatch(/Second/);
+      const none = buildInfo(base(mkS()), null, undefined);
+      expect(none.rows.find((r) => r.key === "guidance")).toBeUndefined();
+    });
     it("garbage values are dropped", () => {
       const S = mkS();
       S.scans["1"].objs.push({ id: "300", c: "ship_s", n: "", o: null, x: NaN, z: undefined, hull: "x", shield: null, rr: NaN, wfc: 0 } as never);

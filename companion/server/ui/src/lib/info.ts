@@ -4,6 +4,7 @@
 // (Element.replaceChildren(null) stringifies) and empty bars for objects without hull/shield.
 import { joinParts, pct01, text, toNum, type Fmt } from "./format";
 import { isOwnerlessShip } from "./objects";
+import { guidanceModel } from "@web/mapstyle.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = Record<string, any>;
@@ -11,7 +12,7 @@ export type Tr = (key: string, vars?: Record<string, unknown>) => string;
 
 export type RowValue = { kind: "text"; text: string; tone?: "pos" | "neg" | "hostile" | "enemy" } | { kind: "bar"; bar: "hull" | "shield"; pct: number };
 export interface Row { key: string; label: string; value: RowValue }
-export interface Btn { key: string; label: string; tip: string; cmd: string | null; args: string[]; allowed: boolean; local?: "center" | "sector" }
+export interface Btn { key: string; label: string; tip: string; cmd: string | null; args: string[]; allowed: boolean; local?: "center" | "sector" | "guidance" }
 export interface LinkItem { id: string; label: string; station?: boolean }
 export type Cargo =
   | { state: "loading" | "nodata" | "locked" | "empty" }
@@ -71,6 +72,27 @@ function findObj(S: Any, sel: Any): { o: Any; sid: string | null } | null {
   return null;
 }
 
+/** one line about the active guidance (mapstyle.guidanceModel): where its target is; canShow = the map can
+ *  show it ("show on map": the target in its sector, or the route in the galaxy view) */
+export function guidanceSummary(M: Any | null, t: Tr, sectorName: (id: unknown) => string): { text: string; canShow: boolean } | null {
+  if (!M) return null;
+  if (M.off) return { text: t("guidance.off"), canShow: false };
+  const tg = M.target;
+  const parts: (string | null)[] = [];
+  if (M.kind === "course" && !M.ob) parts.push(t("guidance.course"));
+  if (tg && !M.hidden) {
+    parts.push(text(tg.n));
+    if (tg.in && text(tg.in.n)) parts.push(t("guidance.in", { name: tg.in.n }));
+    parts.push(sectorName(tg.s));
+  } else if (M.hidden) parts.push(t("guidance.unknown"));
+  if (M.pending) parts.push(t("guidance.pending"));
+  else if (typeof M.jumps === "number" && M.jumps > 0) parts.push(M.jumps === 1 ? t("guidance.jumps_one") : t("guidance.jumps", { n: M.jumps }));
+  if (M.cut && !M.hidden) parts.push(t("guidance.cut"));
+  const s = joinParts(parts);
+  const canShow = !!((tg && !M.hidden && toNum(tg.x) !== null) || (!M.hidden && M.targetSid) || (M.pts && M.pts.length));
+  return s ? { text: s, canShow } : (canShow ? { text: t("guidance.title"), canShow } : null);
+}
+
 function allowed(S: Any, cmd: string) {
   return !S.hello || !Array.isArray(S.hello.allow) || S.hello.allow.includes(cmd);
 }
@@ -98,6 +120,12 @@ export function buildInfo(ctx: InfoCtx, sel: Any | null, det: Any | null | undef
       const tg = p.target;
       push(m.rows, "target", t("info.target"), txt(tg ? joinParts([text(tg.name) ?? "?", f.dist(tg.dist)]) : t("top.none")));
       push(m.rows, "mission", t("info.mission"), txt(p.mission ? text(p.mission.name) : null));
+      // v1.3: the active guidance - where its target is, and "show on map"
+      const gs = guidanceSummary(guidanceModel(S), t, sectorName);
+      if (gs) {
+        push(m.rows, "guidance", t("guidance.title"), txt(gs.text));
+        if (gs.canShow) m.buttons.push({ key: "guidance_show", label: t("guidance.show"), tip: t("guidance.show_tip"), cmd: null, args: [], allowed: true, local: "guidance" });
+      }
     }
     m.hints.push(t("info.pick_hint"));
     return m;

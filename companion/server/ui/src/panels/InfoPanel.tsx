@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Bar, GameIcon, Hint, objColorCss, SectionTitle } from "@/components/bits";
 import { FitScroll } from "@/components/FitScroll";
 import { useBus, useT } from "@/core/hooks";
-import { getMap } from "@/core/mapHost";
+import { getMap, showGuidanceOnMap } from "@/core/mapHost";
 import { command, factionName, S, sectorName, select, whereText } from "@/core/store";
 import { setView } from "@/core/ui";
 import { buildInfo, type Btn } from "@/lib/info";
@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 
 const BTN_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   center: Crosshair, sector_view: MapIcon, openmap: ExternalLink, target: Target, guidance: Navigation, stop: OctagonX, flyto: Ship,
+  guidance_show: Crosshair,
 };
 
 function ActionButton({ b }: { b: Btn }) {
@@ -24,6 +25,7 @@ function ActionButton({ b }: { b: Btn }) {
   const run = () => {
     if (b.local === "center") { setView("map"); getMap()?.centerOn(b.args[0]); return; }
     if (b.local === "sector") { setView("map"); select({ kind: "sector", id: b.args[0], from: "info" }); return; }
+    if (b.local === "guidance") { showGuidanceOnMap(); return; }
     if (b.cmd) command(b.cmd, ...b.args);
   };
   const tip = b.tip + (b.allowed && needsControl ? t("info.needs_control") : "");

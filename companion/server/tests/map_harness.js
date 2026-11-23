@@ -574,6 +574,105 @@ async function run() {
   }
   document.documentElement.style.fontSize = "";
 
+  // ---------------- G (v1.3): mission guidance - the game's route, colour, live start point, end, galaxy, interaction
+  {
+    const S = makeS(), bus = makeBus();
+    const MC = { r: 255, g: 191, b: 0, a: 100 };
+    S.theme = { holo: { missioncolor: MC, playercolor: { r: 77, g: 255, b: 77 } }, ui: {} };
+    const gdCross = { k: "mission", mid: "1738216", n: "Amongst the Argon", ob: "Hack: Repair Terminal",
+      r: [{ s: "s1", x: -10000, z: -30000, id: "he1", k: "he" }, { s: "s1", x: 30000, z: -15000, id: "hx1", k: "hx" },
+          { s: "s1", x: 50000, z: 0, id: "g1", k: "g" }, { s: "s3", x: -50000, z: 0, id: "g2", k: "g" }],
+      t: { id: "tg", s: "s3", x: 30000, z: 20000, n: "Repair Terminal", c: "room", in: { id: "st9", n: "Wharf", c: "station" } } };
+    S.player.gd = gdCross;
+    try { localStorage.clear(); } catch (e) { /* isolation: no stored camera / watched sector */ }
+    const b = box(1100, 700);
+    const m = new MapView(b, { S, bus });
+    m.setMode("sector"); m.cfg.lines = true; m.cfg.mini = true; m.viewSector = null;
+    m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.view, { cx: 0, cz: -10000, scale: 0.006 });
+    frame(m);
+    const G = m.lastGuidance;
+    const want = [[-40000, -30000], [-10000, -30000], [30000, -15000], [50000, 0]];
+    check(G && G.world.length === 1 && JSON.stringify(G.world[0]) === JSON.stringify(want),
+          `G: sector polyline = player -> highway entry -> highway exit -> next-hop gate (route waypoints, not a straight line) ${G && JSON.stringify(G.world)}`);
+    check(G && G.color === MC, "G: line colour is the game map's missioncolor from the theme message (same object)");
+    // the pixel in the middle of a segment has that colour
+    const dpr = window.devicePixelRatio || 1;
+    const [ax, ay] = m.toScreen(-10000, -30000), [bx2, by2] = m.toScreen(30000, -15000);
+    const px = m.ctx2d.getImageData(Math.round((ax + bx2) / 2 * dpr), Math.round((ay + by2) / 2 * dpr), 1, 1).data;
+    check(Math.abs(px[0] - 255) < 30 && Math.abs(px[1] - 191) < 30 && px[2] < 40, `G: the drawn line pixel is the mission colour (${[...px].slice(0, 3)})`);
+    check(G && /Alpha|Beta/.test(G.label) && G.label.startsWith("→ Beta") && /1 jump/.test(G.label),
+          `G: label at the next-hop gate: '→ next sector · target sector, N jumps' (${G && G.label})`);
+    // lines are below the icons: drawn before the station / gate icons (hit list built after the lines)
+    check(m.hit.some((h) => h.o.id === "g1"), "G: gate icon still drawn (above the line)");
+    // live start point: the ship moves -> the next frame starts there, without a new route
+    S.player.object.x = -30000; S.player.object.z = -35000;
+    frame(m);
+    const s0 = m.lastGuidance.runs[0][0], ps = m.toScreen(-30000, -35000);
+    check(Math.abs(s0[0] - ps[0]) < 0.01 && Math.abs(s0[1] - ps[1]) < 0.01, "G: the line starts at the player's drawn position every frame");
+    // hover the line -> tooltip with mission, objective, distance
+    const cr = m.canvas.getBoundingClientRect();
+    const mx = (ax + bx2) / 2, my = (ay + by2) / 2;
+    m.canvas.dispatchEvent(new PointerEvent("pointermove", { clientX: cr.left + mx, clientY: cr.top + my, pointerId: 31, bubbles: true }));
+    check(!m.tip.hidden && /Amongst the Argon/.test(m.tip.textContent) && /Hack: Repair Terminal/.test(m.tip.textContent) && /km/.test(m.tip.textContent),
+          `G: hovering the line shows mission, objective and distance (${m.tip.textContent})`);
+    // target in this sector: marker + label with objective and km
+    S.player.gd = { k: "mission", mid: "1", n: "Local", ob: "Hack: Repair Terminal", r: [], t: { id: "st1", s: "s1", x: 10000, z: 10000, n: "Station One", c: "station" } };
+    frame(m);
+    const L = m.lastGuidance;
+    check(L && L.marker && L.world[0].length === 2 && /^Hack: Repair Terminal · [\d.,]+ km$/.test(L.label),
+          `G: target in the player's sector: straight line, marker, label 'objective · N km' (${L && L.label})`);
+    const d = Math.hypot(10000 + 30000, 10000 + 35000) / 1000;
+    check(L && Math.abs(L.dist / 1000 - d) < 0.01, `G: distance = along the line (${L && (L.dist / 1000).toFixed(2)} km)`);
+    // click the marker (no object above it at that point? the station is there -> it selects the station)
+    S.player.gd.t = { id: "tz", s: "s1", x: 20000, z: 30000, c: "zone" };
+    frame(m);
+    const mk = m.lastGuidance.marker;
+    m.canvas.dispatchEvent(new PointerEvent("pointerdown", { clientX: cr.left + mk.x, clientY: cr.top + mk.y, pointerId: 32, bubbles: true, button: 0 }));
+    m.canvas.dispatchEvent(new PointerEvent("pointerup", { clientX: cr.left + mk.x, clientY: cr.top + mk.y, pointerId: 32, bubbles: true, button: 0 }));
+    check(S.selected && S.selected.id === "tz" && S.selected.obj && S.selected.obj.mt, `G: clicking the target marker selects the target (${S.selected && S.selected.id})`);
+    // guidance ends -> gone in the same frame
+    delete S.player.gd;
+    frame(m);
+    check(m.lastGuidance === null && m.gdHit === null, "G: guidance ended -> line, marker and label gone in the next frame");
+    // pending route / disabled / hidden target: nothing drawn
+    for (const [nm, gd] of [["pending", { k: "mission", rq: true, t: { id: "x", s: "s1", x: 1, z: 1 } }], ["off", { k: "mission", off: true }],
+                            ["hidden", { k: "mission", th: true, cut: true, r: [] }]]) {
+      S.player.gd = gd; frame(m);
+      check(!m.lastGuidance || (!m.lastGuidance.runs.length && !m.lastGuidance.marker), `G: ${nm} -> no line, no marker`);
+    }
+    // old bridge: plotted course to another sector -> no guessed line in the sector view
+    delete S.player.gd; S.player.guidance = { id: "g2", s: "s3", x: -50000, z: 0, n: "Gate" };
+    frame(m);
+    check(!m.lastGuidance || !m.lastGuidance.runs.length, "G: old bridge, course into another sector: no stray line in the sector view");
+    delete S.player.guidance;
+    // galaxy view: the multi-hop route through the actual gate positions, target sector outlined; the mini map too
+    S.player.gd = gdCross;
+    Object.assign(m.view, { cx: 0, cz: -10000, scale: 0.006 });
+    frame(m);
+    check(m.lastMiniGuidance && m.lastMiniGuidance.line.length === 6 && m.lastMiniGuidance.target, `G: mini galaxy shows the route (${m.lastMiniGuidance && m.lastMiniGuidance.line.length} points) and the target`);
+    m.setMode("galaxy"); frame(m);
+    const GG = m.lastGalaxyGuidance;
+    const exp = [m.gateGalaxyPos("s1", S.player.object), ...gdCross.r.map((q) => m.gateGalaxyPos(q.s, q)), m.gateGalaxyPos("s3", gdCross.t)]
+      .map(([x, z]) => m.toScreen(x, z));
+    check(GG && GG.line.length === exp.length && GG.line.every((p, i) => Math.hypot(p[0] - exp[i][0], p[1] - exp[i][1]) < 0.01) && GG.targetSid === "s3",
+          `G: galaxy view polyline through player + each hop's gates (gate positions) to the target, target sector s3 outlined (${GG && GG.line.length} points)`);
+    // show on map: target in another sector -> that sector, focus on the target, zoom unchanged
+    m.setMode("sector"); m.toManual(); m.manualUntil = Infinity; frame(m);
+    const sc0 = m.view.scale;
+    m.cam = "follow"; m.autoZoom = { sector: false, galaxy: false };     // a map that has settled once (same rule as centerOn)
+    const ok = m.showGuidance();
+    for (let i = 0; i < 40; i++) frame(m);
+    check(ok && m.mode === "sector" && m.viewSector === "s3" && m.cam === "focus" && Math.abs(m.view.cx - 30000) < 300 && Math.abs(m.view.cz - 20000) < 300 && Math.abs(m.view.scale / sc0 - 1) < 1e-9,
+          `G: showGuidance() opens the target's sector and centres it, zoom unchanged (${m.viewSector}, ${Math.round(m.view.cx)},${Math.round(m.view.cz)})`);
+    // in the watched target sector: arrival gate -> target, marker
+    check(m.lastGuidance && m.lastGuidance.marker && m.lastGuidance.world[0].length === 2, "G: target sector shows the arrival gate -> target part and the marker");
+    // layer "Routes and orders" off -> nothing
+    m.cfg.lines = false; frame(m);
+    check(!m.lastGuidance, "G: the 'Routes and orders' layer hides the guidance");
+    m.destroy(); b.remove();
+  }
+
   // ---------------- M10: overlays never overlap / leave the container
   for (const [w, h] of [[1900, 950], [940, 510], [480, 360]]) {
     const S = makeS(), bus = makeBus();

@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,10 +26,14 @@ ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from cdp import Browser, find_browser  # noqa: E402
 
-PORT, PIPE = 8790, "x4c_smoke"
+PORT, PIPE = int(os.environ.get("X4C_SMOKE_PORT", "8790")), "x4c_smoke"     # override when 8790 is busy
 BASE = f"http://127.0.0.1:{PORT}"
 EN = json.loads((ROOT / "ui" / "src" / "i18n" / "en.json").read_text(encoding="utf-8"))
 results: list[tuple[bool, str]] = []
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")      # check texts may hold map labels ("→")
+except (AttributeError, ValueError):
+    pass
 CASE_FILTER = ""
 REPLAY_FROZEN = True
 # temporary state / snapshots: X4C_TMP (e.g. a work folder on a data drive), else the system temp dir
@@ -44,7 +49,7 @@ def check(ok, what):
 
 def start_world(dist: Path, state: str, replay: Path | None = None):
     launcher = (f"import sys; sys.path.insert(0, r'{ROOT}'); import server; from pathlib import Path; server.DIST = Path(r'{dist}'); "
-                f"sys.argv = ['server.py', '--port', '{PORT}', '--pipe', '{PIPE}', '--ui', 'dist', '--state-dir', r'{state}', "
+                f"sys.argv = ['server.py', '--port', '{PORT}', '--pipe', '{PIPE}', '--host', '127.0.0.1', '--ui', 'dist', '--state-dir', r'{state}', "
                 f"'--log-file', 'smoke_server.log']; sys.exit(server.main())")
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
@@ -154,6 +159,80 @@ async def handover_matrix(b, sim_world: bool):
         await b.close_page(p)
 
 
+SHOTS = Path(os.environ.get("X4C_SHOTS") or r"D:\X4-backups\work\shots")
+# the sector view's guidance this frame: drawn (a polyline / marker) when the data has a guidance to show
+GD_DRAWN = f"""(() => {{ const m = {MAP}; m.dirty = true; m.frame(performance.now()); const G = m.lastGuidance, gd = m.S.player && m.S.player.gd;
+    return [!!(gd && G && (G.runs.length || G.marker)), G ? G.label : null, G ? G.runs.length : 0]; }})()"""
+# the player's-sector polyline must be: the player's position this frame, then the route points of this sector in order
+GD_SHAPE = f"""(() => {{ const m = {MAP}, S = m.S; m.dirty = true; m.frame(performance.now());
+    const gd = S.player.gd, G = m.lastGuidance, ps = String(S.player.sector.id), o = S.player.object;
+    if (!gd || !G || !G.world.length) return {{ ok: false, why: 'nothing drawn', gd: !!gd }};
+    const exp = [[o.x, o.z]];
+    const pts = (gd.r || []).map(q => [String(q.s), q.x, q.z]);
+    if (gd.t && gd.t.x !== undefined && gd.t.x !== null) pts.push([String(gd.t.s), gd.t.x, gd.t.z]);
+    for (const [s, x, z] of pts) {{ if (s !== ps) break; exp.push([x, z]); }}
+    const got = G.world[0];
+    const same = got.length === exp.length && got.every((p, i) => Math.abs(p[0] - exp[i][0]) < 1e-6 && Math.abs(p[1] - exp[i][1]) < 1e-6);
+    const sp = m.toScreen(o.x, o.z), s0 = G.runs[0][0];
+    return {{ ok: same, n: got.length, start: Math.hypot(s0[0] - sp[0], s0[1] - sp[1]) < 0.01,
+              color: JSON.stringify(G.color) === JSON.stringify(S.theme && S.theme.holo && S.theme.holo.missioncolor), label: G.label }}; }})()"""
+
+
+async def guidance_checks(b, p):
+    """v1.3 mission guidance against the simulator (sim --guidance route = what the new bridge sends)."""
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    await p.click(5, 300); await p.key("1"); await asyncio.sleep(0.4)
+    await p.eval(f"(() => {{ const m = {MAP}; if (!m.layers.hidden) m.togglePop('layers'); return true; }})()")
+    await p.eval(f"(() => {{ const m = {MAP}; m.setMode('sector'); m.auto(); return true; }})()")
+    await asyncio.sleep(1.2)
+    samples = []
+    for _ in range(6):                         # the ship flies on (300 m/s): every sample is one frame
+        samples.append(await p.eval(GD_SHAPE))
+        await asyncio.sleep(0.4)
+    check(all(s.get("ok") for s in samples), f"guidance shape: player -> the route's waypoints of this sector (polyline vertices = route points) in 6 frames ({[s.get('n') for s in samples]})")
+    check(all(s.get("start") for s in samples), "guidance starts at the player's drawn position in every sampled frame while the ship moves")
+    check(all(s.get("color") for s in samples), "guidance colour = the game's missioncolor of the theme message")
+    lab = samples[-1].get("label") or ""
+    check(bool(re.search(r"^→ .+ · .+, \d+ jumps?$", lab) or re.search(r" · [\d.,]+ km$", lab)), f"guidance label: '→ next · target, N jumps' or 'objective · N km' ({lab})")
+    # screenshots: sector near / far, galaxy
+    for name, sc in (("sector_near", 0.004), ("sector_far", 0.0006)):
+        await p.eval(f"(() => {{ const m = {MAP}, o = m.S.player.object; m.toManual(); m.manualUntil = Infinity; Object.assign(m.view, {{ cx: o.x, cz: o.z, scale: {sc} }}); m.dirty = true; return true; }})()")
+        await asyncio.sleep(0.6)
+        await p.screenshot(SHOTS / f"guidance_{name}.png")
+    await nav_tab(p, "galaxy"); await asyncio.sleep(1.2)
+    st = await p.eval(f"""(() => {{ const m = {MAP}, S = m.S, gd = S.player.gd; m.dirty = true; m.frame(performance.now()); const GG = m.lastGalaxyGuidance;
+        if (!gd || !GG) return {{ ok: false }};
+        const pts = [[String(S.player.sector.id), S.player.object]].concat((gd.r || []).map(q => [String(q.s), q]));
+        if (gd.t && gd.t.x != null) pts.push([String(gd.t.s), gd.t]);
+        const exp = pts.filter(([s]) => m.geo().sectors.get(s)).map(([s, q]) => m.toScreen(...m.gateGalaxyPos(s, q)));
+        const same = GG.line.length === exp.length && GG.line.every((q, i) => Math.hypot(q[0] - exp[i][0], q[1] - exp[i][1]) < 0.01);
+        return {{ ok: same, n: GG.line.length, hops: new Set(pts.map(([s]) => s)).size, target: GG.targetSid === (gd.t ? String(gd.t.s) : null) }}; }})()""")
+    check(st.get("ok") and st.get("target") and st.get("n", 0) >= 2, f"galaxy view: guidance polyline through the player and every hop's gate positions, target sector outlined ({st})")
+    await p.eval(f"""(() => {{ const m = {MAP}, g = m.sectorGeo(m.S.player.sector.id); m.toManual(); m.manualUntil = Infinity;
+        Object.assign(m.gview, {{ cx: g ? g.x : 0, cz: g ? g.z : 0, scale: Math.min(m.w, m.h) / 9e7 }}); m.dirty = true; return true; }})()""")
+    await asyncio.sleep(0.6)
+    await p.screenshot(SHOTS / "guidance_galaxy.png")
+    # guidance ends (a player message without "gd"): gone in the galaxy and the sector view
+    await p.eval(f"(() => {{ if (!window.__gdHook) {{ window.__gdHook = true; {MAP}.c.bus.on('player', () => {{ if (window.__noGd) delete {MAP}.S.player.gd; }}); }} window.__noGd = true; return true; }})()")
+    await asyncio.sleep(0.8)
+    g1 = await p.eval(f"(() => {{ const m = {MAP}; m.dirty = true; m.frame(performance.now()); return [!m.S.player.gd, m.lastGalaxyGuidance]; }})()")
+    await nav_tab(p, "map"); await asyncio.sleep(0.8)
+    g2 = await p.eval(f"(() => {{ const m = {MAP}; m.dirty = true; m.frame(performance.now()); return [m.lastGuidance, (m.lastMiniGuidance || null)]; }})()")
+    check(g1[0] and g1[1] is None and g2[0] is None and g2[1] is None, f"guidance ended -> line, marker, label gone (galaxy, sector, mini) ({g1[1]}, {g2})")
+    await p.eval("(() => { window.__noGd = false; return true; })()")
+    await asyncio.sleep(0.8)
+    # Missions panel: the active mission shows where its target is; "Show on map" centres it
+    await p.click(5, 300); await p.key("5"); await asyncio.sleep(1.0)
+    row = await p.eval("(() => { const e = document.querySelector('[data-guidance]'); return e ? e.innerText : null; })()")
+    ok_click = await p.click_el("document.querySelector('[data-guidance-show]')")
+    await asyncio.sleep(1.5)
+    st = await p.eval(f"""(() => {{ const m = {MAP}, gd = m.S.player.gd, v = window.__x4ui.getUI().view;
+        return [v, m.mode, m.cam, m.focusObj, gd && gd.t ? gd.t.id : null, m.currentSid(), gd && gd.t ? String(gd.t.s) : null]; }})()""")
+    check(row and ok_click and st[0] == "map" and st[1] == "sector" and st[2] == "focus" and st[3] == st[4] and st[5] == st[6],
+          f"Missions: active mission shows its target ({row!r}); 'Show on map' opens the target's sector focused on it ({st})")
+    await p.click(5, 300); await p.key("a"); await asyncio.sleep(0.8)
+
+
 async def run(dist: Path, replay: bool, suite: str) -> int:
     async with Browser(1700, 1100, port=9336, profile="headless-smoke") as b:
         # the core checks first: in the simulator they need the player near its start (abandoned ships,
@@ -215,6 +294,14 @@ async def run_core(b, minimal: bool) -> int:
             return [m.lastGateLinks, pairs.size]; }})()""")
         check(st and st[0] == st[1] and st[1] > 0, f"galaxy: every gate pair between known sectors is drawn as a connection (drawn {st[0]}, pairs {st[1]})")
         await nav_tab(p, "map"); await asyncio.sleep(0.6)
+        # ---- v1.3 guidance with whatever the data holds (live replay: today's bridge sends no "gd"): never a stray line
+        st = await p.eval(f"""(() => {{ const m = {MAP}, S = m.S; m.dirty = true; m.frame(performance.now());
+            const P = S.player || {{}}, gd = P.gd, lg = P.guidance, ps = P.sector ? String(P.sector.id) : null;
+            const legacyHere = !gd && lg && !lg.unknown && String(lg.s) === ps;
+            const G = m.lastGuidance;
+            if (!gd && !legacyHere) return [!G || (!G.runs.length && !G.marker), 'no gd' + (lg ? ' (legacy course in ' + lg.s + ')' : '')];
+            return [!!(G && G.runs.length), gd ? 'gd' : 'legacy course here']; }})()""")
+        check(st and st[0], f"guidance with the data as it is: drawn only when there is something to draw ({st})")
         if minimal:
             return 0
 
@@ -401,6 +488,8 @@ async def run_core(b, minimal: bool) -> int:
         check(not bad, f"abandoned-ship badges never overlap each other ({bad})")
         await p.click(5, 300); await p.key("a"); await asyncio.sleep(0.5)
 
+        await guidance_checks(b, p)
+
         # ---- Layers popover at 80 / 100 / 125 %
         for font in (80, 100, 125):
             q = await fresh(b, font=font, w=1600, h=1100)
@@ -408,12 +497,53 @@ async def run_core(b, minimal: bool) -> int:
             st = await q.eval(f"""(() => {{ const m = {MAP}, L = m.layers, C = m.body.getBoundingClientRect(), r = L.getBoundingClientRect();
                 return [!L.hidden, r.top >= C.top && r.bottom <= C.bottom + 0.5, L.clientHeight >= L.scrollHeight - 1 || L.clientHeight >= 60, Math.round(r.height)]; }})()""")
             check(st and st[0] and st[1] and st[2] and st[3] > 60, f"Layers popover opens fully at {font} % ({st})")
+            st = await q.eval(GD_DRAWN)
+            check(st and st[0], f"mission guidance drawn at UI scale {font} % ({st})")
 
         # ---- pop-out map draws
         q = await fresh(b, url="/?panel=map", w=1200, h=800)
         st = await q.eval(f"[{MAP}.w, {MAP}.h, {MAP}.canvas.width]")
         h = await q.eval(CANVAS_HASH)
         check(st[0] > 500 and st[1] > 300 and h, f"pop-out map draws ({st})")
+        st = await q.eval(GD_DRAWN)
+        check(st and st[0], f"mission guidance drawn in the pop-out map ({st})")
+
+        # ---- full-screen toggle in the top bar (real click = user gesture); Esc exit updates the icon
+        q = await fresh(b)
+        await q.eval("(() => { const L = " + json.dumps([EN["top"]["fullscreen"], EN["top"]["fullscreen_exit"]]) + "; window.__fsBtn = () => "
+                     "[...document.querySelectorAll('button[aria-pressed]')].find(e => L.includes(e.getAttribute('aria-label'))) || null; return true; })()")
+        fs0 = await q.eval("[!!window.__fsBtn(), !!document.fullscreenEnabled]")
+        if not fs0[0]:
+            check(not fs0[1], f"full-screen button hidden only because the Fullscreen API is unavailable ({fs0})")
+        else:
+            # a real click first: headless Brave refuses full screen ("not granted"), a visible browser grants it
+            await q.eval("(() => { window.__fsLog = []; document.addEventListener('fullscreenchange', () => window.__fsLog.push(!!document.fullscreenElement)); "
+                         "const o = Element.prototype.requestFullscreen; Element.prototype.requestFullscreen = function () { const r = o.call(this); "
+                         "r.then(() => window.__fsLog.push('granted'), (e) => window.__fsLog.push('refused: ' + e.message)); return r; }; return true; })()")
+            await q.click_el("window.__fsBtn()"); await asyncio.sleep(1.0)
+            real = await q.eval("[!!document.fullscreenElement, window.__fsLog]")
+            if real[0]:
+                await q.eval("document.exitFullscreen().then(() => true, () => false)"); await asyncio.sleep(0.8)
+            # the toggle logic + icon against an emulated Fullscreen API (what the browser does: the element
+            # property + 'fullscreenchange'; Esc = the browser leaves full screen and fires the event)
+            await q.eval("""(() => { let fs = null; window.__fsCalls = [];
+                Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fs });
+                const fire = () => document.dispatchEvent(new Event('fullscreenchange'));
+                Element.prototype.requestFullscreen = function () { window.__fsCalls.push('request'); fs = this; fire(); return Promise.resolve(); };
+                document.exitFullscreen = function () { window.__fsCalls.push('exit'); fs = null; fire(); return Promise.resolve(); };
+                window.__fsEsc = () => { fs = null; fire(); }; return true; })()""")
+            BTN = "window.__fsBtn()"
+            await q.click_el(BTN); await asyncio.sleep(0.6)
+            on = await q.eval(f"[!!document.fullscreenElement, {BTN}.getAttribute('aria-pressed'), {BTN}.getAttribute('aria-label'), window.__fsCalls.slice()]")
+            check(on[0] and on[1] == "true" and on[2] == EN["top"]["fullscreen_exit"] and on[3] == ["request"],
+                  f"full-screen button: click requests full screen, icon + label switch (real headless request: {real}; emulated: {on})")
+            await q.eval("window.__fsEsc()"); await asyncio.sleep(0.6)
+            esc = await q.eval(f"[!!document.fullscreenElement, {BTN}.getAttribute('aria-pressed'), {BTN}.getAttribute('aria-label')]")
+            check(not esc[0] and esc[1] == "false" and esc[2] == EN["top"]["fullscreen"], f"leaving full screen by Esc (fullscreenchange) switches the icon back ({esc})")
+            await q.click_el(BTN); await asyncio.sleep(0.5)
+            await q.click_el(BTN); await asyncio.sleep(0.5)
+            off2 = await q.eval(f"[!!document.fullscreenElement, {BTN}.getAttribute('aria-pressed'), window.__fsCalls.slice()]")
+            check(not off2[0] and off2[1] == "false" and off2[2] == ["request", "request", "exit"], f"full-screen button toggles: second click exits ({off2})")
 
         # ---- language switch (real clicks on the language select)
         q = await fresh(b)

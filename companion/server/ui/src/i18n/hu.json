@@ -427,6 +427,19 @@
     "offers_title": "Ajánlatok",
     "time_left_v": "hátralévő idő: {{v}}"
   },
+  "guidance": {
+    "title": "Útvonal",
+    "course": "Kijelölt útvonal",
+    "off": "Ennél a küldetésnél az útvonal ki van kapcsolva",
+    "pending": "útvonal számítása",
+    "jumps": "{{n}} ugrás",
+    "jumps_one": "1 ugrás",
+    "unknown": "a célpont felfedezetlen területen van",
+    "cut": "a további út nem ismert",
+    "in": "itt: {{name}}",
+    "show": "Mutasd a térképen",
+    "show_tip": "A térkép a célpontra áll (galaxisnézet, ha csak az útvonal vagy a célpont szektora ismert)"
+  },
   "factions": {
     "c_faction": "Frakció",
     "c_relation": "Kapcsolat",
