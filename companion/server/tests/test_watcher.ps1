@@ -105,6 +105,7 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
 '@
 @{ port = $Port; windowTitle = $title; serverStartTimeoutSec = 20; browserExe = "$run\bin\stubwin.exe"
    browserArgs = @($marker, $title, '--app={url}'); serverCommand = @($py, "$run\bin\stub_server.py", "$Port", $starts)
+   startTelemetryServer = $false; startCockpitHelper = $false   # never start the REAL telemetry server / cockpit helper
 } | ConvertTo-Json | Set-Content -Encoding UTF8 "$run\state\watcher.json"
 
 $job = [IntPtr]::Zero

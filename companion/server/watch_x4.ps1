@@ -141,14 +141,16 @@ function Join-CommandLine([string[]]$tokens) {
     ($tokens | ForEach-Object { if ($_ -match '"') { throw "quote character not allowed in: $_" }; if ($_ -match '\s' -or $_ -eq '') { '"' + $_ + '"' } else { $_ } }) -join ' '
 }
 
-function Start-Detached([string]$commandLine, [bool]$hidden) {
+function Start-Detached([string]$commandLine, [bool]$hidden, [string]$cwd = '', [int]$showWindow = -1) {
     # Win32_Process.Create: the new process is created by the WMI service, not as our child, so it is not in our
     # process tree or job object and survives when the watcher is killed. Needs no admin rights for own session.
     $props = @{}
     if ($hidden) { $props.ShowWindow = [uint16]0 }   # SW_HIDE
+    elseif ($showWindow -ge 0) { $props.ShowWindow = [uint16]$showWindow }
+    if (-not $cwd) { $cwd = $here }
     $si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property $props
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-        CommandLine = $commandLine; CurrentDirectory = $here; ProcessStartupInformation = $si }
+        CommandLine = $commandLine; CurrentDirectory = $cwd; ProcessStartupInformation = $si }
     if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed (code $($r.ReturnValue)): $commandLine" }
     return [int]$r.ProcessId
 }
@@ -226,6 +228,160 @@ function Invoke-GameStarted {
     Write-Log "game running, $srv, $wtxt$tail"
 }
 
+# ---- tablet/phone cockpit extras (game start only, not -OpenNow) ----
+# watcher.json: startTelemetryServer (true) / telemetryServerExe / telemetryServerWindow ('minimized' | 'hidden'),
+#               startCockpitHelper (true) / cockpitHelperScript
+function Get-CfgBool($name, [bool]$default) {
+    $v = $cfg[$name]
+    if ($null -eq $v -or "$v" -eq '') { return $default }
+    if ($v -is [bool]) { return $v }
+    return @('1', 'true', 'yes', 'on') -contains "$v".Trim().ToLowerInvariant()
+}
+
+function Start-TelemetryServer {
+    # third-party X4Telemetry_Server (web cockpits for iPad/phone, port 8080); started only if not already running
+    if (-not (Get-CfgBool 'startTelemetryServer' $true)) { return 'telemetry server: disabled in config' }
+    $exe = [IO.Path]::GetFullPath([string](Get-Cfg 'telemetryServerExe' 'D:\X4Telemetry_Server\X4Telemetry_Server.exe'))
+    if (-not (Test-Path -LiteralPath $exe)) { return "telemetry server: $exe not found - not started" }
+    $name = [IO.Path]::GetFileNameWithoutExtension($exe)
+    foreach ($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+        $path = $null; try { $path = $p.Path } catch { }
+        if (-not $path -or [string]::Equals([IO.Path]::GetFullPath($path), $exe, [StringComparison]::OrdinalIgnoreCase)) {
+            return "telemetry server already running (pid $($p.Id))"
+        }
+    }
+    # it is a console program: host it in a classic conhost window (minimized, not activated, so the game keeps
+    # focus) or in a headless conhost (no window at all)
+    $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+    $mode = ([string](Get-Cfg 'telemetryServerWindow' 'minimized')).ToLowerInvariant()
+    if ($mode -eq 'hidden') { $cl = Join-CommandLine @($conhost, '--headless', $exe) } else { $cl = Join-CommandLine @($conhost, $exe) }
+    $cwd = Split-Path -Parent $exe   # it must run in its own folder (config.json, www\)
+    if ($DryRun) { return "DRY-RUN: would start telemetry server ($mode, cwd $cwd): $cl" }
+    if ($mode -eq 'hidden') { $tp = Start-Detached $cl $true $cwd } else { $tp = Start-Detached $cl $false $cwd 7 }   # 7 = SW_SHOWMINNOACTIVE
+    return "telemetry server started (pid $tp, $mode, cwd $cwd): $cl"
+}
+
+function Start-CockpitHelper {
+    # tools\x4cockpit_helper\start_helper.ps1: starts the beep/throttle helper (port 8790) detached if the port is free
+    if (-not (Get-CfgBool 'startCockpitHelper' $true)) { return 'cockpit helper: disabled in config' }
+    $helperScript = [string](Get-Cfg 'cockpitHelperScript' (Join-Path (Split-Path -Parent $here) 'x4cockpit_helper\start_helper.ps1'))
+    if (-not (Test-Path -LiteralPath $helperScript)) { return "cockpit helper: $helperScript not found - not started" }
+    if ($DryRun) { return "DRY-RUN: would run $helperScript" }
+    # runs synchronously in a child PowerShell (it only checks the port, launches the helper via WMI and returns)
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = (& $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $helperScript 2>&1 | Out-String).Trim() -replace '\s*\r?\n\s*', ' | ' }
+    finally { $ErrorActionPreference = $eap }
+    return "cockpit helper (exit $LASTEXITCODE): $out"
+}
+
+function Invoke-CockpitExtras([string]$which) {
+    try { if ($which -eq 'telemetry') { Write-Log (Start-TelemetryServer) } else { Write-Log (Start-CockpitHelper) } }
+    catch { Write-Log "error ($which): $($_.Exception.Message)" }
+}
+
+# ---- telemetry server health check (while the game runs) ----
+# Seen on 2026-11-23: the telemetry server sat at "Waiting for X4" although a client held its pipe, and it sent
+# nothing at all to the tablet/phone (not even its Hello) until it was restarted - then the game reconnected at once.
+# Stuck = the server's pipe has a client (no free instance) AND its WebSocket stays (nearly) silent, or the process
+# runs but the port does not answer. After 'telemetryHealthFailures' such checks in a row the server is restarted.
+# A free pipe (server waiting for the game, e.g. while a save loads) is healthy and never triggers a restart.
+# watcher.json: telemetryHealthCheck (true), telemetryHealthIntervalSec (30), telemetryHealthFailures (3),
+#               telemetryPort (default: "port" in the server's config.json, else 8080), telemetryPipe ('x4telemetry')
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class X4WatchPipe {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool WaitNamedPipe(string name, uint timeoutMs);
+    // "free" = an instance waits for a client; "busy" = the pipe exists but every instance has a client; "none" = no such pipe
+    public static string State(string pipeName) {
+        if (WaitNamedPipe(@"\\.\pipe\" + pipeName, 1)) return "free";
+        return Marshal.GetLastWin32Error() == 2 ? "none" : "busy";
+    }
+}
+'@
+
+function Get-TelemetryExe { [IO.Path]::GetFullPath([string](Get-Cfg 'telemetryServerExe' 'D:\X4Telemetry_Server\X4Telemetry_Server.exe')) }
+
+function Get-TelemetryProcesses {
+    $exe = Get-TelemetryExe
+    @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($exe)) -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null; try { $path = $_.Path } catch { }
+        $path -and [string]::Equals([IO.Path]::GetFullPath($path), $exe, [StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Get-TelemetryPort {
+    $p = [int](Get-Cfg 'telemetryPort' 0)
+    if ($p -gt 0) { return $p }
+    try { $j = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TelemetryExe)) 'config.json') | ConvertFrom-Json; if ([int]$j.port -gt 0) { return [int]$j.port } } catch { }
+    return 8080
+}
+
+function Get-TelemetryFlow([int]$port, [int]$windowMs = 4000) {
+    # messages the server pushes to a new WebSocket client within the window: -1 = cannot connect
+    $ws = New-Object Net.WebSockets.ClientWebSocket
+    $cts = New-Object Threading.CancellationTokenSource
+    $n = 0
+    try {
+        $t = $ws.ConnectAsync([Uri]"ws://127.0.0.1:$port/ws", $cts.Token)
+        if (-not $t.Wait(3000)) { return -1 }
+        $buf = New-Object 'ArraySegment[byte]' -ArgumentList (, (New-Object byte[] 65536))
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ($sw.ElapsedMilliseconds -lt $windowMs -and $n -lt 5) {
+            $r = $ws.ReceiveAsync($buf, $cts.Token)
+            if (-not $r.Wait([Math]::Max(1, $windowMs - [int]$sw.ElapsedMilliseconds))) { break }
+            $n++
+        }
+        return $n
+    } catch { return -1 }
+    finally { try { $cts.Cancel() } catch { }; try { $ws.Abort() } catch { }; try { $ws.Dispose() } catch { } }
+}
+
+function Get-TelemetryHealth {
+    # 'off' | 'no-process' | 'waiting' (pipe free) | 'ok' | 'stuck: <why>'
+    if (-not (Get-CfgBool 'startTelemetryServer' $true) -or -not (Get-CfgBool 'telemetryHealthCheck' $true)) { return 'off' }
+    if (-not (Get-TelemetryProcesses)) { return 'no-process' }
+    $pipe = [X4WatchPipe]::State([string](Get-Cfg 'telemetryPipe' 'x4telemetry'))
+    $n = Get-TelemetryFlow (Get-TelemetryPort)
+    if ($n -lt 0) { return 'stuck: process runs but the port does not answer' }
+    if ($pipe -eq 'busy' -and $n -lt 3) { return "stuck: pipe has a client but only $n message(s) in 4 s" }
+    if ($pipe -eq 'busy') { return 'ok' }
+    return 'waiting'
+}
+
+function Restart-TelemetryServer([string]$why) {
+    if ($DryRun) { Write-Log "DRY-RUN: would restart the telemetry server ($why)"; return }
+    $old = @(Get-TelemetryProcesses)
+    foreach ($p in $old) { try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { Write-Log "could not stop telemetry server pid $($p.Id): $($_.Exception.Message)" } }
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ((Get-TelemetryProcesses) -and $sw.Elapsed.TotalSeconds -lt 5) { Start-Sleep -Milliseconds 200 }
+    Write-Log ("telemetry server restarted ($why; old pid " + (($old | ForEach-Object { $_.Id }) -join ',') + '): ' + (Start-TelemetryServer))
+}
+
+$script:thFails = 0          # consecutive stuck checks
+$script:thLast = [Diagnostics.Stopwatch]::StartNew()
+$script:thRestarted = $false # restarted and not seen healthy since: do not restart again (no restart loop)
+
+function Invoke-TelemetryHealthCheck {
+    $interval = [double](Get-Cfg 'telemetryHealthIntervalSec' 30)
+    if ($script:thLast.Elapsed.TotalSeconds -lt $interval) { return }
+    $script:thLast.Restart()
+    $h = Get-TelemetryHealth
+    if ($h -like 'stuck*') {
+        $script:thFails++
+        $need = [int](Get-Cfg 'telemetryHealthFailures' 3)
+        if ($script:thFails -lt $need) { Write-Log "telemetry server check $($script:thFails)/${need}: $h"; return }
+        if ($script:thRestarted) { if ($script:thFails -eq $need) { Write-Log "telemetry server still $h after a restart - leaving it alone until it has worked again" }; return }
+        Restart-TelemetryServer $h
+        $script:thRestarted = $true
+        $script:thFails = 0
+        return
+    }
+    if ($script:thFails -gt 0 -or ($h -eq 'ok' -and $script:thRestarted)) { Write-Log "telemetry server check: $h" }
+    $script:thFails = 0
+    if ($h -eq 'ok') { $script:thRestarted = $false }
+    if ($h -eq 'no-process') { Invoke-CockpitExtras 'telemetry' }   # it was closed while the game runs: start it again
+}
+
 # ---- main loop ----
 $mode = @(); if ($Once) { $mode += 'once' }; if ($DryRun) { $mode += 'dry-run' }; if ($OpenNow) { $mode += 'open-now' }
 Write-Log ("watcher start ({0}) game={1} port={2} poll={3}s" -f ($(if ($mode) { $mode -join ',' } else { 'loop' })), $GameExe, $Port, $PollSeconds)
@@ -239,9 +395,13 @@ $wasRunning = $false
 while ($true) {
     try {
         $running = Test-GameRunning
-        if ($running -and -not $wasRunning) { Invoke-GameStarted }
-        elseif (-not $running -and $wasRunning) { Write-Log 'game exited - leaving server and window alone' }
+        if ($running -and -not $wasRunning) {
+            Invoke-CockpitExtras 'telemetry'   # instant (no wait), so it goes first
+            try { Invoke-GameStarted } finally { Invoke-CockpitExtras 'helper' }
+        }
+        elseif (-not $running -and $wasRunning) { Write-Log 'game exited - leaving server and window alone'; $script:thFails = 0; $script:thRestarted = $false }
         elseif ($Once -and -not $running) { Write-Log 'game not running -> nothing to do' }
+        elseif ($running -and -not $Once) { Invoke-TelemetryHealthCheck }
         $wasRunning = $running
     } catch { Write-Log "error: $($_.Exception.Message)" }
     if ($Once) { break }
