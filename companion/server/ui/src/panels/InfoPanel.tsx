@@ -4,7 +4,7 @@ import { Crosshair, ExternalLink, Map as MapIcon, Navigation, OctagonX, Ship, Ta
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Bar, GameIcon, Hint, objColorCss, SectionTitle } from "@/components/bits";
+import { Bar, GameIcon, Hint, listColorCss, SectionTitle } from "@/components/bits";
 import { FitScroll } from "@/components/FitScroll";
 import { useBus, useT } from "@/core/hooks";
 import { getMap, showGuidanceOnMap } from "@/core/mapHost";
@@ -56,7 +56,7 @@ export function InfoView({ compact = false }: { compact?: boolean }) {
       <div className="mb-1 flex min-w-0 items-center gap-2.5">
         {m.icon ? <GameIcon o={m.icon} size={30} /> : <Telescope className="size-6 text-primary" />}
         <div className="min-w-0">
-          <h3 className="truncate text-base leading-tight font-semibold" style={m.icon ? { color: objColorCss(m.icon) } : undefined} title={m.title}>{m.title}</h3>
+          <h3 className="truncate text-base leading-tight font-semibold" style={m.icon ? { color: listColorCss(m.icon) } : undefined} title={m.title}>{m.title}</h3>
           {m.subtitle && <div className="truncate font-mono text-xs text-muted-foreground">{m.subtitle}</div>}
         </div>
       </div>

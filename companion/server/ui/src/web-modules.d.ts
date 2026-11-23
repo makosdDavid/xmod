@@ -34,6 +34,11 @@ declare module "@web/mapstyle.js" {
   export interface RGB { r: number; g: number; b: number }
   export function setIconIndex(names: string[] | null, cb?: (name?: string) => void): void;
   export function objColor(o: any, theme: any, opts?: Record<string, any>): RGB;
+  export function listColorKey(o: any, opts?: { currentId?: string | null }): string | null;
+  export function listColor(o: any, theme: any, opts?: { currentId?: string | null }): RGB;
+  export function holo(theme: any, name: string): RGB;
+  export const FALLBACK_HOLO: Record<string, RGB>;
+  export const TEXT_NORMAL: RGB;
   export function iconFor(o: any): string;
   export function tintedURL(name: string, col: RGB): string | null;
   export function rgb(c: RGB | null | undefined, a?: number): string;

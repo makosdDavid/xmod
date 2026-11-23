@@ -31,18 +31,18 @@ export function FactionsPanel() {
                 "@[44rem]:grid-cols-[minmax(10rem,14rem)_7.5rem_7rem_minmax(0,1fr)]", String(fa.id) === cur && "x4-sel")}>
               <div className="flex min-w-0 items-center gap-1.5" title={fa.n || fa.id}>
                 <Dot color={factionColor(fa.id)} />
-                <span className="truncate font-medium">{fa.n || fa.id}</span>
+                <span data-relation={tone === "hostile" || tone === "enemy" ? tone : "normal"} className={cn("truncate font-medium", tone === "hostile" && "text-hostile", tone === "enemy" && "text-enemy")}>{fa.n || fa.id}</span>
                 {text(fa.sn) && <span className="shrink-0 text-xs text-muted-foreground">[{fa.sn}]</span>}
                 {fa.lk && <Lock className="size-3 shrink-0 text-muted-foreground" aria-label={t("factions.locked")} />}
               </div>
               <div className={cn("text-right tabular-nums @[44rem]:text-left",
-                tone === "hostile" && "text-bad", tone === "enemy" && "text-enemy", tone === "friend" && "text-friend")}>
+                tone === "hostile" && "text-hostile", tone === "enemy" && "text-enemy")}>
                 {f.signed(rel)} {text(fa.rn) && <span className="text-xs text-muted-foreground">{fa.rn}</span>}
               </div>
               <div className="col-span-2 @[44rem]:col-span-1">
                 <span className="relative block h-1.5 w-full max-w-[7rem] bg-white/10">
                   <span className="absolute -top-0.5 -bottom-0.5 left-1/2 w-px bg-border" />
-                  <span className={cn("absolute inset-y-0 bg-muted-foreground", tone === "friend" && "bg-friend", tone === "enemy" && "bg-enemy", tone === "hostile" && "bg-bad")}
+                  <span className={cn("absolute inset-y-0 bg-muted-foreground", tone === "friend" && "bg-friend", tone === "enemy" && "bg-enemy", tone === "hostile" && "bg-hostile")}
                     style={{ left: `${Math.min(pct, 50)}%`, width: `${Math.abs(pct - 50)}%` }} />
                 </span>
               </div>

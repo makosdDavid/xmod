@@ -141,12 +141,13 @@ STATION_ICONS = ["mapob_tradestation", "mapob_shipyard", "mapob_wharf", "mapob_e
 OTHER_ICONS = {"gate": "mapob_jumpgate", "highwayentrygate": "mapob_superhighway", "satellite": "mapob_satellite_01",
                "navbeacon": "mapob_navbeacon", "resourceprobe": "mapob_resourceprobe", "lockbox": "mapob_lockbox",
                "collectablewares": "mapob_collectablewarecontainer", "mine": "mapob_mine"}
-# NOT the game's values: the real ones come from GetHoloMapColors() at runtime (helper.lua:13070).
-# Rough look-alikes so the simulator shows a coloured map; the dashboard never uses these in the game.
-SIM_HOLO = {"playercolor": (0, 255, 162), "friendcolor": (153, 204, 255), "enemycolor": (255, 128, 0),
-            "hostilecolor": (255, 32, 32), "missioncolor": (255, 192, 0), "currentplayershipcolor": (255, 255, 255),
-            "gatecolor": (255, 255, 255), "highwaygatecolor": (64, 160, 255), "superhighwaycolor": (64, 160, 255),
-            "highwaycolor": (90, 140, 200), "radarcolor": (40, 90, 160), "visitorcolor": (200, 120, 255), "missilecolor": (255, 64, 64)}
+# In the game these come from GetHoloMapColors() at runtime (helper.lua:13070). The simulator sends the
+# same values: the colors.xml holomap_* mappings, which equal what a live 9.x session reported (see
+# web/mapstyle.js FALLBACK_HOLO for the line numbers).
+SIM_HOLO = {"playercolor": (77, 255, 77), "friendcolor": (0, 149, 255), "enemycolor": (255, 153, 153),
+            "hostilecolor": (255, 0, 0), "missioncolor": (255, 191, 0), "currentplayershipcolor": (204, 255, 204),
+            "gatecolor": (128, 128, 128), "highwaygatecolor": (128, 128, 128), "superhighwaycolor": (0, 105, 179),
+            "highwaycolor": (77, 181, 255), "radarcolor": (179, 0, 179), "visitorcolor": (255, 255, 0), "missilecolor": (255, 0, 0)}
 
 
 def jd(o) -> str:

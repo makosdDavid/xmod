@@ -1,22 +1,31 @@
 // Small shared presentational pieces: game icon, hull/shield bar, empty state, key/value list, section title.
 import * as React from "react";
 import { Box, CircleDot, Diamond, Square, Triangle } from "lucide-react";
-import { iconFor, objColor, rgb, tintedURL } from "@web/mapstyle.js";
+import { iconFor, listColor, objColor, rgb, tintedURL } from "@web/mapstyle.js";
 import { S, type Any } from "@/core/store";
 import { cn } from "@/lib/utils";
 import { pct01 } from "@/lib/format";
 
-/** the game's map icon of an object, tinted with the game map's colour; a drawn fallback without the export */
+const curShip = () => (S.player && S.player.object ? S.player.object.id : null);
+
+/** the game's icon of an object in a LIST row: the game draws it inline in the row's text colour
+ *  (menu_map.lua:7371-7377), so it follows listColor (neutral = white); a drawn fallback without the export */
 export function GameIcon({ o, size = 18, className }: { o: Any; size?: number; className?: string }) {
-  const col = objColor(o, S.theme, { currentId: S.player && S.player.object ? S.player.object.id : null });
+  const col = listColor(o, S.theme, { currentId: curShip() });
   const url = tintedURL(iconFor(o), col);
   if (url) return <img src={url} width={size} height={size} alt="" className={cn("inline-block shrink-0 align-middle", className)} />;
   const c = String(o.c || o.class || "");
   const Ico = c.startsWith("ship") ? Triangle : c === "station" ? Square : c === "gate" || c === "highwayentrygate" ? Diamond : c ? CircleDot : Box;
   return <Ico style={{ color: rgb(col), width: size - 2, height: size - 2 }} className={cn("inline-block shrink-0", className)} aria-hidden />;
 }
+/** the map ICON colour of an object (holomap colours, neutral = friendcolor), as the map draws it */
 export function objColorCss(o: Any) {
-  return rgb(objColor(o, S.theme, { currentId: S.player && S.player.object ? S.player.object.id : null }));
+  return rgb(objColor(o, S.theme, { currentId: curShip() }));
+}
+/** the object LIST text colour, the game's rule (menu_map.lua:7317-7364): mission > own (current ship) >
+ *  hostile > enemy with the live holomap colours, everything else text_normal (white) */
+export function listColorCss(o: Any) {
+  return rgb(listColor(o, S.theme, { currentId: curShip() }));
 }
 
 /** hull / shield bar with the number; renders nothing without a value */

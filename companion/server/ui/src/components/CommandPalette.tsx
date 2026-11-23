@@ -2,9 +2,9 @@
 // actions, and jump to them (the map centres on the object / shows the sector).
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Globe, LayoutTemplate, Map as MapIcon, Ship, Building2, Crosshair } from "lucide-react";
+import { Globe, LayoutTemplate, Map as MapIcon, Ship, Crosshair } from "lucide-react";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
-import { GameIcon } from "@/components/bits";
+import { GameIcon, listColorCss } from "@/components/bits";
 import { PRESETS } from "@/core/layout";
 import { getMap } from "@/core/mapHost";
 import { S, sectorName, select, type Any } from "@/core/store";
@@ -57,7 +57,7 @@ export function CommandPalette() {
           <CommandGroup heading={t("palette.ships")}>
             {ships.slice(0, LIMIT).map((e) => (
               <CommandItem key={e.id} value={"ship-" + e.id} onSelect={() => jumpObj(e)}>
-                <GameIcon o={e} size={16} /><span className="truncate">{e.n || "–"}</span>
+                <GameIcon o={e} size={16} /><span className="truncate" style={{ color: listColorCss(e) }}>{e.n || "–"}</span>
                 <CommandShortcut className="tracking-normal">{[e.code, sectorName(e.s)].filter(Boolean).join(" · ")}</CommandShortcut>
               </CommandItem>
             ))}
@@ -68,7 +68,7 @@ export function CommandPalette() {
           <CommandGroup heading={t("palette.stations")}>
             {stations.slice(0, LIMIT).map((e) => (
               <CommandItem key={e.id} value={"st-" + e.id} onSelect={() => jumpObj(e)}>
-                <Building2 className="text-primary" /><span className="truncate">{e.n || "–"}</span>
+                <GameIcon o={e} size={16} /><span className="truncate" style={{ color: listColorCss(e) }}>{e.n || "–"}</span>
                 <CommandShortcut className="tracking-normal">{sectorName(e.s)}</CommandShortcut>
               </CommandItem>
             ))}
@@ -79,7 +79,7 @@ export function CommandPalette() {
           <CommandGroup heading={t("palette.ownerless")}>
             {abandoned.slice(0, LIMIT).map(({ o, sid }) => (
               <CommandItem key={"ab" + sid + o.id} value={"ab-" + sid + "-" + o.id} onSelect={() => jumpObj(o, sid)}>
-                <GameIcon o={o} size={16} /><span className="truncate">{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
+                <GameIcon o={o} size={16} /><span className="truncate" style={{ color: listColorCss(o) }}>{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
                 <span className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] font-semibold uppercase" style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}>{t("objects.ownerless_badge")}</span>
                 <CommandShortcut className="tracking-normal">{sectorName(sid)}</CommandShortcut>
               </CommandItem>
@@ -91,7 +91,7 @@ export function CommandPalette() {
           <CommandGroup heading={t("palette.objects")}>
             {objs.slice(0, LIMIT).map(({ o, sid }) => (
               <CommandItem key={sid + o.id} value={"o-" + sid + "-" + o.id} onSelect={() => jumpObj(o, sid)}>
-                <GameIcon o={o} size={16} /><span className="truncate">{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
+                <GameIcon o={o} size={16} /><span className="truncate" style={{ color: listColorCss(o) }}>{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
                 <CommandShortcut className="tracking-normal">{sectorName(sid)}</CommandShortcut>
               </CommandItem>
             ))}

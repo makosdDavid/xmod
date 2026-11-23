@@ -54,9 +54,19 @@
   --x4-error: #ff0000;                           /* text_error :274 -> red_moderate_glow :92 */
   --x4-positive: #00ff00;                        /* text_positive :276 -> green_weak_glow :171 */
   --x4-neutral: #ffff99;                         /* text_neutral :277 -> yellow_very_bright_glow :161 */
+  /* relation / ownership / mission text colours (used where the game uses these text_* mappings; object
+     list rows use the live holomap colours instead, see mapstyle.js listColorKey) */
   --x4-mission: #ffbf00;                         /* text_mission :310 -> amber_glow :140 */
+  --x4-mission-inactive: #b38600;                /* text_mission_inactive :311 -> amber_dark :146 */
+  --x4-player: #00ff00;                          /* text_player :280 -> green_glow :173 */
+  --x4-player-current: #99ff99;                  /* text_player_current :281 -> green_very_bright_moderate_glow :179 */
+  --x4-ally: #4dff4d;                            /* text_ally :284 -> green_bright_weak_glow :183 */
   --x4-friend: #99ff99;                          /* text_friend :286 -> green_very_bright_weak_glow :178 */
+  --x4-relation-neutral: #ffffff;                /* text_relation_neutral :287 -> white_weak_glow :42 */
   --x4-enemy: #ff9999;                           /* text_enemy :288 -> red_very_bright_weak_glow :96 */
+  --x4-hostile: #ff0000;                         /* text_hostile :289 -> red_weak_glow :91 */
+  --x4-log-highlight: #ff0000;                   /* text_logbook_highlight :307 -> red_moderate_glow :92 */
+  --x4-negative: #ff0000;                        /* text_negative :278 -> red_moderate_glow :92 */
   --x4-shield: #0095ff;                          /* shieldhullbar_shield :452 -> azure_glow :216 */
   --x4-hull: #ffffff;                            /* shieldhullbar_hull :453 -> white_moderate_glow :43 */
   --x4-danger-bg: rgba(179, 0, 0, 0.627);        /* red_dark_alpha_160 :110 (a destructive button's fill) */
@@ -120,6 +130,13 @@
   --frame: var(--x4-frame);
   --friend: var(--x4-friend);
   --enemy: var(--x4-enemy);
+  --ally: var(--x4-ally);
+  --hostile: var(--x4-hostile);
+  --player: var(--x4-player);
+  --player-current: var(--x4-player-current);
+  --mission: var(--x4-mission);
+  --mission-inactive: var(--x4-mission-inactive);
+  --log-highlight: var(--x4-log-highlight);
   --font-sans-stack: "X4UI", "Titillium Web", "Segoe UI", system-ui, sans-serif;
   --font-mono-stack: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   /* the map module reads these (web/MAP-API.md "Look"): canvas label font, mini galaxy frame */
@@ -181,6 +198,13 @@
   --color-frame: var(--frame);
   --color-friend: var(--friend);
   --color-enemy: var(--enemy);
+  --color-ally: var(--ally);
+  --color-hostile: var(--hostile);
+  --color-player: var(--player);
+  --color-player-current: var(--player-current);
+  --color-mission: var(--mission);
+  --color-mission-inactive: var(--mission-inactive);
+  --color-log-highlight: var(--log-highlight);
   --font-sans: var(--font-sans-stack);
   --font-mono: var(--font-mono-stack);
 }

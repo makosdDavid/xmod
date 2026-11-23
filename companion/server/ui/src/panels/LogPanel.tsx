@@ -47,24 +47,27 @@ export function LogPanel() {
           const meta = [e.en, e.fa, e.so].filter((x) => typeof x === "string" && x.trim()).join(" · ");
           const mo = toNum(e.mo);
           return (
-            <div key={k} data-key={k} onClick={e.ic ? () => select({ kind: "obj", id: String(e.ic), from: "log" }) : undefined}
+            // the game's logbook entry (menu_playerinfo.lua:2947-2993): bold title + text in text_normal, or
+            // text_logbook_highlight when the entry is highlighted; entity / faction, time and money
+            // (text_positive / text_negative) below; entries separated by a 1 px row_title line (:2989-2991).
+            // The unread marker (left edge) is the companion's own; the game has no per-category colour.
+            <div key={k} data-key={k} data-log-hl={e.hl ? "1" : undefined} onClick={e.ic ? () => select({ kind: "obj", id: String(e.ic), from: "log" }) : undefined}
               title={e.ic ? t("log.show_on_map") : undefined}
-              className={cn("border-b border-border/40 px-3 py-1.5 text-[0.8rem]",
+              className={cn("border-b border-panel-head px-3 py-2 text-[0.8rem]",
+                e.hl ? "text-log-highlight" : "text-foreground",
                 e.ic && "cursor-pointer hover:bg-primary/10",
-                isNew && "bg-primary/5 shadow-[inset_2px_0_0_var(--primary)]",
-                e.cat === "alerts" && "shadow-[inset_2px_0_0_var(--bad)]", e.cat === "alerts" && isNew && "bg-bad/10 shadow-[inset_3px_0_0_var(--bad)]",
+                isNew && "shadow-[inset_3px_0_0_var(--x4-azure-bright)]",
                 k === cur && "x4-sel")}>
               <div className="flex min-w-0 items-baseline gap-2">
-                <span className="hidden shrink-0 text-[0.65rem] tracking-wider text-muted-foreground uppercase @[24rem]:inline">{t("log.cat_" + e.cat, { defaultValue: e.cat || "" })}</span>
-                <span className={cn("min-w-0 flex-1 truncate font-medium", e.hl && "text-bad")} title={e.ti || ""}>{e.ti || ""}</span>
+                <span className="min-w-0 flex-1 truncate font-semibold" title={e.ti || ""}>{e.ti || ""}</span>
                 <span className="shrink-0 text-[0.7rem] text-muted-foreground" title={f.gameTime(e.t) ?? ""}>{f.ago(e.t, now) ?? ""}</span>
               </div>
-              {e.tx && <div className="line-clamp-2 text-foreground/75" title={e.tx}>{e.tx}</div>}
-              {(meta || mo) && (
-                <div className="truncate text-xs text-muted-foreground">
-                  {meta}{mo ? <span className={mo >= 0 ? "text-pos" : "text-neg"}>{(meta ? " " : "") + (mo > 0 ? "+" : "") + (f.money(mo) ?? "")}</span> : null}
-                </div>
-              )}
+              {e.tx && <div className="line-clamp-2" title={e.tx}>{e.tx}</div>}
+              <div className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground">
+                <span className="hidden shrink-0 text-[0.65rem] tracking-wider uppercase @[24rem]:inline">{t("log.cat_" + e.cat, { defaultValue: e.cat || "" })}</span>
+                <span className="min-w-0 flex-1 truncate">{meta}</span>
+                {mo ? <span className={cn("shrink-0 tabular-nums", mo >= 0 ? "text-pos" : "text-neg")}>{(mo > 0 ? "+" : "") + (f.money(mo) ?? "")}</span> : null}
+              </div>
             </div>
           );
         })}

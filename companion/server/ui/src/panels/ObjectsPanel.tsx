@@ -2,7 +2,7 @@
 import { useMemo, useRef } from "react";
 import { Search, Satellite } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Bar, Empty, GameIcon, objColorCss } from "@/components/bits";
+import { Bar, Empty, GameIcon, listColorCss } from "@/components/bits";
 import { FilterBar } from "@/components/FilterBar";
 import { FitScroll } from "@/components/FitScroll";
 import { useBus, useSettings, useT } from "@/core/hooks";
@@ -76,7 +76,7 @@ export function ObjectsPanel() {
                 (String(o.id) === selId || String(o.id) === cur) && "x4-sel")}>
               <span className="flex justify-center"><GameIcon o={o} size={18} /></span>
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="truncate font-medium" style={{ color: objColorCss(o) }} title={name}>{name}</span>
+                <span className="truncate font-medium" style={{ color: listColorCss(o) }} title={name}>{name}</span>
                 {abandoned && (
                   <span data-badge="ownerless" title={t("objects.ownerless_tip")} style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}
                     className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold uppercase">{t("objects.ownerless_badge")}</span>

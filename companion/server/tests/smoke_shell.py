@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from cdp import Browser, find_browser  # noqa: E402
-from style_checks import style_checks  # noqa: E402
+from style_checks import color_checks, style_checks  # noqa: E402
 
 PORT, PIPE = int(os.environ.get("X4C_SMOKE_PORT", "8790")), "x4c_smoke"     # override when 8790 is busy
 BASE = f"http://127.0.0.1:{PORT}"
@@ -243,6 +243,8 @@ async def run(dist: Path, replay: bool, suite: str) -> int:
         if suite in ("all", "core", "style") or replay:
             # the game look: computed colours, the bundled font, network, contrast, focus (tests/style_checks.py)
             await style_checks(b, BASE, check, f"{MAP} && {MAP}.w > 0 && {MAP}.S.player && {MAP}.S.liveGalaxy && {MAP}.S.liveGalaxy.length", dist)
+            # the game's semantic colours (relation / ownership / mission) on the map and in every list
+            await color_checks(b, BASE, check, f"{MAP} && {MAP}.w > 0 && {MAP}.S.player && {MAP}.S.liveGalaxy && {MAP}.S.liveGalaxy.length")
         if suite in ("all", "handover"):
             await handover_matrix(b, not replay)
         return summary()

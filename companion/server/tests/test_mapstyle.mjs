@@ -1,6 +1,6 @@
 // Map look regression tests (node tests/test_mapstyle.mjs): the game's colour rule, icon choice,
 // radar hex coverage and gate routing. Exit code 1 on failure.
-import { colorKey, objColor, iconFor, iconSize, hexCellsInRange, radarCell, route, holo, FALLBACK_HOLO, iconFallbackOf } from "../web/mapstyle.js";
+import { colorKey, objColor, iconFor, iconSize, hexCellsInRange, radarCell, route, holo, FALLBACK_HOLO, iconFallbackOf, listColorKey, listColor, TEXT_NORMAL } from "../web/mapstyle.js";
 
 let pass = 0, fail = 0;
 function check(ok, what) { if (ok) pass++; else fail++; console.log((ok ? "PASS " : "FAIL ") + what); }
@@ -22,6 +22,17 @@ check(objColor({ c: "ship_s", o: "argon" }, theme, { factionColors: true, factio
       objColor({ c: "ship_s", o: "argon", h: true }, theme, { factionColors: true, factions: facs }) !== facs.argon.col,
       "faction-colour option recolours neutral objects only");
 check(holo(null, "nonexistent") === FALLBACK_HOLO.friendcolor, "unknown colour name -> neutral fallback");
+// object LIST text (menu_map.lua:7317-7364): neutral = text_normal (white), the rest as the icons
+check(listColorKey({ c: "station", o: "argon" }) === null && listColor({ c: "station", o: "argon" }, theme) === TEXT_NORMAL,
+      "list: neutral -> text_normal (white), not friendcolor");
+check(listColorKey({ c: "ship_s", mt: true, pl: true }) === "missioncolor" && listColorKey({ c: "ship_s", pl: true, id: 7 }, { currentId: "7" }) === "currentplayershipcolor" &&
+      listColorKey({ k: "ship" }) === "playercolor" && listColorKey({ h: true, e: true }) === "hostilecolor" && listColorKey({ e: true }) === "enemycolor",
+      "list: mission > own (current ship) > hostile > enemy");
+// fallbacks = colors.xml holomap_* (= the live GetHoloMapColors values)
+const hex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("");
+check(hex(FALLBACK_HOLO.playercolor) === "#4dff4d" && hex(FALLBACK_HOLO.friendcolor) === "#0095ff" && hex(FALLBACK_HOLO.enemycolor) === "#ff9999" &&
+      hex(FALLBACK_HOLO.hostilecolor) === "#ff0000" && hex(FALLBACK_HOLO.missioncolor) === "#ffbf00" && hex(FALLBACK_HOLO.currentplayershipcolor) === "#ccffcc",
+      "fallback holomap colours are the game's (holomap_player/neutral/enemy/hostile/missiontarget/playerlocation_playerowned)");
 
 // icons: the game's id first, legend icon per type otherwise
 check(iconFor({ ic: "ship_l_destroyer_01", c: "ship_l" }) === "ship_l_destroyer_01", "game icon id is used as is");

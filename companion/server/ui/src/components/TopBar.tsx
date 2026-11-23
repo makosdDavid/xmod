@@ -9,7 +9,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Bar } from "@/components/bits";
+import { Bar, listColorCss } from "@/components/bits";
 import { ControlMenu } from "@/components/ControlMenu";
 import { useBus, useT, useTick } from "@/core/hooks";
 import { connState, S } from "@/core/store";
@@ -153,7 +153,7 @@ export function TopBar() {
         {sp !== null && <span className="hidden shrink-0 text-xs tabular-nums text-muted-foreground 2xl:inline">{f.speed(sp)}</span>}
       </Group>
       <Group label={t("top.target")} className="hidden min-w-0 shrink min-[1800px]:flex">
-        <span className={cn("truncate text-sm", !tg && "text-muted-foreground", tg && tg.hostile && "text-bad", tg && !tg.hostile && tg.enemy && "text-warn")} title={targetText ?? ""}>
+        <span className={cn("truncate text-sm", !tg && "text-muted-foreground")} style={tg ? { color: listColorCss({ id: tg.id, h: tg.hostile, e: tg.enemy, mt: tg.mt, pl: tg.pl }) } : undefined} title={targetText ?? ""}>
           {targetText ?? t("top.none")}
         </span>
       </Group>

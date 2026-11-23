@@ -194,3 +194,10 @@ the container or an ancestor (read once, when the map is built; without them the
 
 They change only this chrome; the map's content colours (holomap colours, icons, owners, guidance,
 resources, highways) are never taken from CSS.
+
+Colours (additive helpers in `mapstyle.js`): map icons use `objColor()` (the legend rule, neutral =
+`friendcolor`); object LIST text uses `listColorKey()` / `listColor()` – the game's list rule
+(menu_map.lua:7317-7364): mission target → `missioncolor`, own → `playercolor` (the ship you are in →
+`currentplayershipcolor`), hostile → `hostilecolor`, enemy → `enemycolor`, everything else `TEXT_NORMAL`
+(white). Values come from the theme message (GetHoloMapColors); `FALLBACK_HOLO` holds the same values
+from colors.xml (`holomap_*`) until it arrives.

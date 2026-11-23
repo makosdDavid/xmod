@@ -4,23 +4,34 @@
 // Sources (vanilla 9.00):
 //  - icon: the id the game reports per object, GetComponentData(obj, "icon") (menu_map.lua:20051, 7301),
 //    sent by the bridge as "ic". When missing, the map legend's icon for that type (menu_map.lua:1533-1637).
-//  - colour: the map legend (menu_map.lua:1543-1637) and the object list (getContainerNameAndColors,
-//    menu_map.lua:7299-7376): mission target -> missioncolor, own -> playercolor (the ship you are in ->
-//    currentplayershipcolor), hostile -> hostilecolor, enemy -> enemycolor, everything else (neutral)
-//    -> friendcolor; jump gate / accelerator -> gatecolor, superhighway gate -> highwaygatecolor.
+//  - map icon colour: the map legend (menu_map.lua:1543-1637): mission target -> missioncolor, own ->
+//    playercolor (the ship you are in -> currentplayershipcolor), hostile -> hostilecolor, enemy ->
+//    enemycolor, everything else (neutral) -> friendcolor; jump gate / accelerator -> gatecolor,
+//    superhighway gate -> highwaygatecolor. List text uses listColorKey() (neutral = white, see there).
 //    The values come from GetHoloMapColors() at runtime ("theme" message). The game's optional
 //    "faction colours" filter (think_diplomacy_factioncolor, default off, menu_map.lua:1881) uses
 //    GetFactionData(faction, "color") instead for non-own objects.
 "use strict";
 
-// Used only until the game's own colours arrive (theme message) - approximations, not game data.
+// Used only until the game's own colours arrive (theme message). The values are the game's: the
+// libraries/colors.xml holomap_* mappings (9.x line numbers), and they equal what GetHoloMapColors()
+// returned in a live 9.x session (checked 2026-11-23): playercolor = holomap_player (:809 green_bright),
+// friendcolor = holomap_neutral (:807 azure), enemycolor = holomap_enemy (:805 red_very_bright),
+// hostilecolor = holomap_hostile (:803 red), missioncolor = holomap_missiontarget (:815 amber),
+// currentplayershipcolor = holomap_playerlocation_playerowned (:810 green_extra_bright),
+// visitorcolor = holomap_visitor (:817 yellow), gatecolor = holomap_jumpgate (:825 grey_128),
+// highwaygatecolor = holomap_highwayentry (:827 grey_128), superhighwaycolor = holomap_superhighway
+// (:795 azure_dark), highwaycolor = holomap_highway (:793 azure_bright), missilecolor = holomap_missile
+// (:821 red). radarcolor: the live value (magenta_dark; no holomap_* mapping names it).
 export const FALLBACK_HOLO = {
-  playercolor: { r: 0, g: 255, b: 162 }, friendcolor: { r: 153, g: 204, b: 255 }, enemycolor: { r: 255, g: 128, b: 0 },
-  hostilecolor: { r: 255, g: 32, b: 32 }, missioncolor: { r: 255, g: 192, b: 0 }, currentplayershipcolor: { r: 255, g: 255, b: 255 },
-  gatecolor: { r: 255, g: 255, b: 255 }, highwaygatecolor: { r: 64, g: 160, b: 255 }, superhighwaycolor: { r: 64, g: 160, b: 255 },
-  highwaycolor: { r: 90, g: 140, b: 200 }, radarcolor: { r: 40, g: 90, b: 160 }, visitorcolor: { r: 200, g: 120, b: 255 },
-  missilecolor: { r: 255, g: 64, b: 64 },
+  playercolor: { r: 77, g: 255, b: 77 }, friendcolor: { r: 0, g: 149, b: 255 }, enemycolor: { r: 255, g: 153, b: 153 },
+  hostilecolor: { r: 255, g: 0, b: 0 }, missioncolor: { r: 255, g: 191, b: 0 }, currentplayershipcolor: { r: 204, g: 255, b: 204 },
+  gatecolor: { r: 128, g: 128, b: 128 }, highwaygatecolor: { r: 128, g: 128, b: 128 }, superhighwaycolor: { r: 0, g: 105, b: 179 },
+  highwaycolor: { r: 77, g: 181, b: 255 }, radarcolor: { r: 179, g: 0, b: 179 }, visitorcolor: { r: 255, g: 255, b: 0 },
+  missilecolor: { r: 255, g: 0, b: 0 },
 };
+// colors.xml text_normal (:267 -> white): the object list's colour for everything without a relation colour
+export const TEXT_NORMAL = { r: 255, g: 255, b: 255 };
 
 export function rgb(c, a = 1) {
   if (!c) return `rgba(200,210,220,${a})`;
@@ -42,6 +53,24 @@ export function colorKey(o, { currentId = null } = {}) {
   if (o.h) return "hostilecolor";
   if (o.e) return "enemycolor";
   return "friendcolor";
+}
+
+// the game's OBJECT LIST rule (menu_map.lua getContainerNameAndColors :7317-7364, used by the property /
+// object list rows :8955 and the info title :13986): mission target -> missioncolor, own -> playercolor (the
+// ship you are in -> currentplayershipcolor), hostile -> hostilecolor, enemy -> enemycolor, everything else
+// -> text_normal (white). Unlike the map icons, neutral objects are NOT friendcolor in the list.
+// Returns the holomap colour name, or null for text_normal.
+export function listColorKey(o, { currentId = null } = {}) {
+  if (!o) return null;
+  if (o.mt) return "missioncolor";
+  if (o.pl || o.o === "player" || o.k) return (currentId && String(o.id) === String(currentId)) ? "currentplayershipcolor" : "playercolor";
+  if (o.h) return "hostilecolor";
+  if (o.e) return "enemycolor";
+  return null;
+}
+export function listColor(o, theme, opts = {}) {
+  const key = listColorKey(o, opts);
+  return key ? holo(theme, key) : TEXT_NORMAL;
 }
 
 // final colour {r,g,b}; factionColors: game option "Frakciószínek"

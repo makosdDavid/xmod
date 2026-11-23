@@ -25,12 +25,13 @@ import smoke_shell as sm  # noqa: E402
 from cdp import Browser  # noqa: E402
 
 EN = sm.EN
+PREFIX = "style"
 MAP = sm.MAP
 
 
 async def shoot(p, out: Path, name: str):
     await asyncio.sleep(0.4)
-    await p.screenshot(out / f"style_{name}.png")
+    await p.screenshot(out / f"{PREFIX}_{name}.png")
     print("shot", name, flush=True)
 
 
@@ -112,8 +113,11 @@ def main() -> int:
     ap.add_argument("--dist", type=Path, required=True)
     ap.add_argument("--replay", type=Path, default=None)
     ap.add_argument("--live", action="store_true", help="replay a GET /api/state snapshot of the live server on 8788 (read-only)")
+    ap.add_argument("--prefix", default="style", help="file name prefix (style_*.png)")
     ap.add_argument("--out", type=Path, default=Path(os.environ.get("X4C_SHOTS") or r"D:\X4-backups\work\shots"))
     a = ap.parse_args()
+    global PREFIX
+    PREFIX = a.prefix
     a.out.mkdir(parents=True, exist_ok=True)
     if a.live:
         snap = urllib.request.urlopen("http://127.0.0.1:8788/api/state", timeout=10).read()

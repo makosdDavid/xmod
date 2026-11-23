@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, Network, Search, Ship } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Toggle } from "@/components/ui/toggle";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Bar, Empty, GameIcon } from "@/components/bits";
+import { Bar, Empty, GameIcon, listColorCss } from "@/components/bits";
 import { FilterBar } from "@/components/FilterBar";
 import { FitScroll } from "@/components/FitScroll";
 import { useBus, useSettings, useT } from "@/core/hooks";
@@ -130,11 +130,11 @@ export function PropertyPanel() {
                 const cell = (k: string) => cn("truncate px-2 py-1", COLS.find((c) => c.k === k)!.at ? "hidden " + COLS.find((c) => c.k === k)!.at : "");
                 return (
                   <TableRow key={id} data-key={id} onClick={() => select({ kind: "obj", id, from: "property" })}
-                    className={cn("cursor-pointer border-border/40", hull !== null && hull < 40 && "text-enemy",
+                    className={cn("cursor-pointer border-border/40", hull !== null && hull < 40 && "text-warn",
                       (id === selId || id === cur) && "x4-sel")}>
                     <TableCell className="truncate px-2 py-1" style={{ paddingLeft: `${0.5 + d * 0.9}rem` }} title={e.n || ""}>
                       {d > 0 && <span className="mr-1 text-muted-foreground">└</span>}
-                      <GameIcon o={e} size={16} className="mr-1.5" />{e.n || "–"}
+                      <GameIcon o={e} size={16} className="mr-1.5" /><span data-list-name style={{ color: listColorCss(e) }}>{e.n || "–"}</span>
                     </TableCell>
                     <TableCell className={cell("hull")}><Bar v={e.hull} kind="hull" width={40} /></TableCell>
                     <TableCell className={cn(cell("s"), String(e.s) === here && "text-primary")} title={sectorName(e.s)}>{sectorName(e.s)}</TableCell>

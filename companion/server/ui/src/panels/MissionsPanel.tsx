@@ -44,16 +44,16 @@ export function MissionsPanel() {
             return (
               <div key={m.id} data-key={"m" + m.id} onClick={() => m.acs && select({ kind: "sector", id: String(m.acs), from: "missions" })}
                 className={cn("cursor-pointer rounded-sm border border-input/60 bg-white/[0.024] px-3 py-2 text-[0.8rem] hover:border-primary hover:bg-accent",
-                  m.act && "border-gold/50 bg-gold/5", "m" + m.id === cur && "ring-1 ring-primary")}>
+                  m.act && "border-mission/60 bg-mission/5", "m" + m.id === cur && "ring-1 ring-primary")}>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                  {m.act && <Badge className="h-4 bg-ok/20 px-1.5 text-[0.65rem] text-ok">{t("missions.active")}</Badge>}
-                  <b className="min-w-0 truncate font-semibold" title={m.n || ""}>{m.n || "–"}</b>
+                  {m.act && <Badge className="h-4 border-mission bg-mission/15 px-1.5 text-[0.65rem] text-mission">{t("missions.active")}</Badge>}
+                  <b className={cn("min-w-0 truncate font-semibold", m.act && "text-mission")} data-mission-name={m.act ? "active" : "inactive"} title={m.n || ""}>{m.n || "–"}</b>
                   <span className="truncate text-xs text-muted-foreground">{joinParts([text(m.st) ?? text(m.mt), m.fa ? factionName(m.fa) : null])}</span>
                 </div>
-                {text(m.ob) && <div className="mt-0.5 truncate text-gold" title={m.ob + prog}>▸ {m.ob}{prog}</div>}
+                {text(m.ob) && <div className={cn("mt-0.5 truncate", m.act ? "text-mission" : "text-mission-inactive")} data-mission-target={m.act ? "active" : "inactive"} title={m.ob + prog}>▸ {m.ob}{prog}</div>}
                 {gsum && gm && gm.mid === String(m.id) && (
                   <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs" data-guidance={m.id}>
-                    <Crosshair className="size-3 shrink-0 text-gold" />
+                    <Crosshair className="size-3 shrink-0 text-mission" />
                     <span className="min-w-0 truncate text-foreground/85" title={gsum.text}>{gsum.text}</span>
                     {gsum.canShow && (
                       <Button size="sm" variant="default" className="ml-auto h-6 shrink-0 gap-1 px-2 text-xs" title={t("guidance.show_tip")}
