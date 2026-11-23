@@ -48,25 +48,36 @@
               <end object="$Target" />
             </get_global_path>
           </do_if>
+          <!-- v1.3.1: the path already holds BOTH ends of a gate connection (entry gate, then the exit gate on the
+               other side) and a local highway lane can appear more than once (live 2026-11-23: each gate hop came
+               out as A, B, B, A and a lane's entry/exit three times). Every component goes in once, in path order,
+               so the route never steps back. $Add: what this path element stands for (a highway as its entry +
+               exit gate, a gate plus its exit gate, anything else as is). -->
           <do_all exact="$Path.count" counter="$i">
             <set_value name="$C" exact="$Path.{$i}" />
+            <create_list name="$Add" />
             <do_if value="$C.isclass.highway">
               <do_if value="@$C.entry">
-                <append_to_list name="$Out" exact="$C.entry" />
+                <append_to_list name="$Add" exact="$C.entry" />
               </do_if>
               <do_if value="@$C.exit">
-                <append_to_list name="$Out" exact="$C.exit" />
+                <append_to_list name="$Add" exact="$C.exit" />
               </do_if>
             </do_if>
             <do_elseif value="$C.isclass.gate">
-              <append_to_list name="$Out" exact="$C" />
+              <append_to_list name="$Add" exact="$C" />
               <do_if value="@$C.exit">
-                <append_to_list name="$Out" exact="$C.exit" />
+                <append_to_list name="$Add" exact="$C.exit" />
               </do_if>
             </do_elseif>
             <do_else>
-              <append_to_list name="$Out" exact="$C" />
+              <append_to_list name="$Add" exact="$C" />
             </do_else>
+            <do_all exact="$Add.count" counter="$k">
+              <do_if value="not $Out.indexof.{$Add.{$k}}">
+                <append_to_list name="$Out" exact="$Add.{$k}" />
+              </do_if>
+            </do_all>
           </do_all>
         </do_if>
         <set_value name="player.entity.$x4companion_gdpath" exact="$Out" />

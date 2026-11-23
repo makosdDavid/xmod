@@ -308,6 +308,17 @@ async def run_core(b, minimal: bool) -> int:
             if (!gd && !legacyHere) return [!G || (!G.runs.length && !G.marker), 'no gd' + (lg ? ' (legacy course in ' + lg.s + ')' : '')];
             return [!!(G && G.runs.length), gd ? 'gd' : 'legacy course here']; }})()""")
         check(st and st[0], f"guidance with the data as it is: drawn only when there is something to draw ({st})")
+        # v1.3.1: whatever the bridge sent (live 1.30 data repeated gate ends / highway pairs), no drawn polyline
+        # revisits a point - sector view and galaxy view
+        st = await p.eval(f"""(() => {{ const m = {MAP}, key = (q) => Math.round(q[0] * 10) + ':' + Math.round(q[1] * 10);
+            const uniq = (pts) => new Set(pts.map(key)).size === pts.length;
+            m.dirty = true; m.frame(performance.now());
+            const G = m.lastGuidance, sec = G ? G.world.every(uniq) : true, nsec = G ? G.world.reduce((a, r) => a + r.length, 0) : 0;
+            const mode = m.mode; m.setMode('galaxy'); m.dirty = true; m.frame(performance.now());
+            const GG = m.lastGalaxyGuidance, gal = GG ? uniq(GG.line) : true, ngal = GG ? GG.line.length : 0;
+            m.setMode(mode);
+            return [sec && gal, nsec, ngal, (m.S.player && m.S.player.gd && (m.S.player.gd.r || []).length) || 0]; }})()""")
+        check(st and st[0], f"guidance polylines never revisit a point (sector vertices {st[1]}, galaxy {st[2]}, route points sent {st[3]})")
         if minimal:
             return 0
 

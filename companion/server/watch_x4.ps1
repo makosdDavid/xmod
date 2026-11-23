@@ -229,8 +229,9 @@ function Invoke-GameStarted {
 }
 
 # ---- tablet/phone cockpit extras (game start only, not -OpenNow) ----
-# watcher.json: startTelemetryServer (true) / telemetryServerExe / telemetryServerWindow ('minimized' | 'hidden'),
-#               startCockpitHelper (true) / cockpitHelperScript
+# Both are optional and OFF unless enabled in watcher.json:
+#   startTelemetryServer (false) + telemetryServerExe (full path, required) / telemetryServerWindow ('minimized' | 'hidden'),
+#   startCockpitHelper (false) / cockpitHelperScript (default: ..\x4cockpit_helper\start_helper.ps1)
 function Get-CfgBool($name, [bool]$default) {
     $v = $cfg[$name]
     if ($null -eq $v -or "$v" -eq '') { return $default }
@@ -240,8 +241,10 @@ function Get-CfgBool($name, [bool]$default) {
 
 function Start-TelemetryServer {
     # third-party X4Telemetry_Server (web cockpits for iPad/phone, port 8080); started only if not already running
-    if (-not (Get-CfgBool 'startTelemetryServer' $true)) { return 'telemetry server: disabled in config' }
-    $exe = [IO.Path]::GetFullPath([string](Get-Cfg 'telemetryServerExe' 'D:\X4Telemetry_Server\X4Telemetry_Server.exe'))
+    # optional and off by default: set startTelemetryServer = true and telemetryServerExe = <full path> in watcher.json
+    if (-not (Get-CfgBool 'startTelemetryServer' $false)) { return 'telemetry server: not enabled in config' }
+    $exe = Get-TelemetryExe
+    if (-not $exe) { return 'telemetry server: telemetryServerExe is not set in watcher.json - not started' }
     if (-not (Test-Path -LiteralPath $exe)) { return "telemetry server: $exe not found - not started" }
     $name = [IO.Path]::GetFileNameWithoutExtension($exe)
     foreach ($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
@@ -263,7 +266,7 @@ function Start-TelemetryServer {
 
 function Start-CockpitHelper {
     # tools\x4cockpit_helper\start_helper.ps1: starts the beep/throttle helper (port 8790) detached if the port is free
-    if (-not (Get-CfgBool 'startCockpitHelper' $true)) { return 'cockpit helper: disabled in config' }
+    if (-not (Get-CfgBool 'startCockpitHelper' $false)) { return 'cockpit helper: not enabled in config' }   # optional, off by default
     $helperScript = [string](Get-Cfg 'cockpitHelperScript' (Join-Path (Split-Path -Parent $here) 'x4cockpit_helper\start_helper.ps1'))
     if (-not (Test-Path -LiteralPath $helperScript)) { return "cockpit helper: $helperScript not found - not started" }
     if ($DryRun) { return "DRY-RUN: would run $helperScript" }
@@ -300,10 +303,14 @@ public static class X4WatchPipe {
 }
 '@
 
-function Get-TelemetryExe { [IO.Path]::GetFullPath([string](Get-Cfg 'telemetryServerExe' 'D:\X4Telemetry_Server\X4Telemetry_Server.exe')) }
+function Get-TelemetryExe {           # full path from watcher.json, '' when not configured
+    $e = [string](Get-Cfg 'telemetryServerExe' '')
+    if ($e) { [IO.Path]::GetFullPath($e) } else { '' }
+}
 
-function Get-TelemetryProcesses {
+function Get-TelemetryProcesses {     # only processes running exactly the configured exe
     $exe = Get-TelemetryExe
+    if (-not $exe) { return @() }
     @(Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($exe)) -ErrorAction SilentlyContinue | Where-Object {
         $path = $null; try { $path = $_.Path } catch { }
         $path -and [string]::Equals([IO.Path]::GetFullPath($path), $exe, [StringComparison]::OrdinalIgnoreCase) })
@@ -316,8 +323,19 @@ function Get-TelemetryPort {
     return 8080
 }
 
-function Get-TelemetryFlow([int]$port, [int]$windowMs = 4000) {
-    # messages the server pushes to a new WebSocket client within the window: -1 = cannot connect
+function Test-TcpPort([int]$port) {
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect('127.0.0.1', $port, $null, $null)
+        if ($ar.AsyncWaitHandle.WaitOne(500)) { $c.EndConnect($ar); return $true }
+        return $false
+    } catch { return $false } finally { $c.Close() }
+}
+
+function Get-TelemetryFlow([int]$port, [int]$windowMs = 4000, [int]$enough = 3) {
+    # messages the server pushes to a new WebSocket client: returns as soon as $enough arrived (a healthy server
+    # with the game connected sends ~30 per second, so this takes a fraction of a second), at the latest after
+    # the window; -1 = cannot connect
     $ws = New-Object Net.WebSockets.ClientWebSocket
     $cts = New-Object Threading.CancellationTokenSource
     $n = 0
@@ -326,7 +344,7 @@ function Get-TelemetryFlow([int]$port, [int]$windowMs = 4000) {
         if (-not $t.Wait(3000)) { return -1 }
         $buf = New-Object 'ArraySegment[byte]' -ArgumentList (, (New-Object byte[] 65536))
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        while ($sw.ElapsedMilliseconds -lt $windowMs -and $n -lt 5) {
+        while ($sw.ElapsedMilliseconds -lt $windowMs -and $n -lt $enough) {
             $r = $ws.ReceiveAsync($buf, $cts.Token)
             if (-not $r.Wait([Math]::Max(1, $windowMs - [int]$sw.ElapsedMilliseconds))) { break }
             $n++
@@ -338,14 +356,17 @@ function Get-TelemetryFlow([int]$port, [int]$windowMs = 4000) {
 
 function Get-TelemetryHealth {
     # 'off' | 'no-process' | 'waiting' (pipe free) | 'ok' | 'stuck: <why>'
-    if (-not (Get-CfgBool 'startTelemetryServer' $true) -or -not (Get-CfgBool 'telemetryHealthCheck' $true)) { return 'off' }
+    if (-not (Get-CfgBool 'startTelemetryServer' $false) -or -not (Get-CfgBool 'telemetryHealthCheck' $true)) { return 'off' }
+    if (-not (Get-TelemetryExe)) { return 'off' }
     if (-not (Get-TelemetryProcesses)) { return 'no-process' }
-    $pipe = [X4WatchPipe]::State([string](Get-Cfg 'telemetryPipe' 'x4telemetry'))
-    $n = Get-TelemetryFlow (Get-TelemetryPort)
+    $port = Get-TelemetryPort
+    if (-not (Test-TcpPort $port)) { return 'stuck: process runs but the port does not answer' }   # 0.5 s at most
+    # cheap first: a free pipe means the server waits for the game - healthy, no WebSocket probe needed
+    if ([X4WatchPipe]::State([string](Get-Cfg 'telemetryPipe' 'x4telemetry')) -ne 'busy') { return 'waiting' }
+    $n = Get-TelemetryFlow $port      # only now; returns at once when data flows, takes the full 4 s only when silent
     if ($n -lt 0) { return 'stuck: process runs but the port does not answer' }
-    if ($pipe -eq 'busy' -and $n -lt 3) { return "stuck: pipe has a client but only $n message(s) in 4 s" }
-    if ($pipe -eq 'busy') { return 'ok' }
-    return 'waiting'
+    if ($n -lt 3) { return "stuck: pipe has a client but only $n message(s) in 4 s" }
+    return 'ok'
 }
 
 function Restart-TelemetryServer([string]$why) {

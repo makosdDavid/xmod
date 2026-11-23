@@ -673,6 +673,41 @@ async function run() {
     m.destroy(); b.remove();
   }
 
+  // ---------------- G2 (v1.3.1): the live 1.30 route with back-steps / repeated highway pairs is drawn clean
+  {
+    const { ROUTE_130_LIVE, ROUTE_130_CLEAN } = await import("./fixture_route130.js");
+    const liveGalaxy = [
+      { id: "c1", name: "C1", macro: "c1", x: 0, z: 0, sectors: [{ id: "309789", name: "Void", macro: "s1", owner: "argon", x: 0, z: 0 }] },
+      { id: "c2", name: "C2", macro: "c2", x: 15e6, z: 8.66e6, sectors: [{ id: "517981", name: "Second", macro: "s2", owner: "argon", x: 0, z: 0 }] },
+      { id: "c3", name: "C3", macro: "c3", x: 30e6, z: 0, sectors: [{ id: "538918", name: "Third", macro: "s3", owner: "argon", x: 0, z: 0 }] },
+    ];
+    const S = { liveGalaxy, gates: [], scans: {}, hwlinks: [], property: new Map(), theme: null, factions: {}, selected: null, details: {},
+                status: { game: "live" }, wsOpen: true,
+                player: { sector: { id: "309789", name: "Void" }, object: { id: "p1", x: -20000, z: 10000, class: "ship_m", name: "Me" }, where: { mode: "pilot" },
+                          gd: { k: "mission", mid: "1", ob: "Deliver", r: ROUTE_130_LIVE, cut: true, th: true } } };
+    Object.assign(S, galaxyIndex(liveGalaxy, [], {}, []));
+    try { localStorage.clear(); } catch (e) { /* isolation */ }
+    const b = box(1000, 650), bus = makeBus();
+    const m = new MapView(b, { S, bus });
+    m.setMode("sector"); m.viewSector = null; m.cfg.lines = true; m.toManual(); m.manualUntil = Infinity;
+    Object.assign(m.view, { cx: 0, cz: 0, scale: 0.003 });
+    frame(m);
+    const key = (p) => p[0] + ":" + p[1];
+    const uniq = (pts) => new Set(pts.map(key)).size === pts.length;
+    const G = m.lastGuidance;
+    check(G && G.world.length === 1 && G.world[0].length === 2 && G.world[0][1][0] === 97603 && G.end.id === "310122" && uniq(G.world[0]),
+          `G2: 1.30 live route, player's sector: ship -> exit gate only, no back-step (${G && JSON.stringify(G.world)})`);
+    m.showSector("517981"); m.toManual(); m.manualUntil = Infinity; Object.assign(m.view, { cx: 0, cz: 0, scale: 0.003 }); frame(m);
+    const G2 = m.lastGuidance;
+    check(G2 && G2.world.length === 1 && G2.world[0].length === 4 && uniq(G2.world[0]) && G2.end.id === "518878",
+          `G2: next sector: arrival gate -> highway entry -> exit -> gate, each once (${G2 && G2.world[0].length} vertices)`);
+    m.setMode("galaxy"); frame(m);
+    const GG = m.lastGalaxyGuidance;
+    check(GG && GG.line.length === 1 + ROUTE_130_CLEAN.length && uniq(GG.line.map((p) => [Math.round(p[0] * 100), Math.round(p[1] * 100)])),
+          `G2: galaxy polyline: player + ${ROUTE_130_CLEAN.length} route points, never revisits a point (${GG && GG.line.length})`);
+    m.destroy(); b.remove();
+  }
+
   // ---------------- M10: overlays never overlap / leave the container
   for (const [w, h] of [[1900, 950], [940, 510], [480, 360]]) {
     const S = makeS(), bus = makeBus();

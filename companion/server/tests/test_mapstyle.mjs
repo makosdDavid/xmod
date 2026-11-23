@@ -116,6 +116,18 @@ const { guidanceModel, guidanceRuns } = await import("../web/mapstyle.js");
   check(L1.legacy && guidanceRuns(L1, "1", [0, 0]).runs[0].length === 2 && L2.legacy && L2.jumps === null && guidanceRuns(L2, "1", [0, 0]).runs.length === 0,
         "old bridge (plotted course only): straight line in the own sector, no guessed route to another sector");
 }
+// v1.3.1 regression: the live 1.30 route (A, B, A back-steps, he/hx pairs three times) is normalised
+{
+  const { ROUTE_130_LIVE, ROUTE_130_CLEAN } = await import("./fixture_route130.js");
+  const M = guidanceModel({ player: { sector: { id: "309789" }, object: { x: 0, z: 0 }, gd: { k: "mission", r: ROUTE_130_LIVE, cut: true, th: true } } });
+  check(M.pts.map((q) => q.id).join() === ROUTE_130_CLEAN.join(), `1.30 live route normalised: every point once, in order (${M.pts.length} of ${ROUTE_130_LIVE.length})`);
+  const a = guidanceRuns(M, "309789", [0, 0]), b = guidanceRuns(M, "517981", null), c = guidanceRuns(M, "538918", null);
+  const key = (p) => p[0] + ":" + p[1];
+  const noRevisit = [a, b, c].every((r) => r.runs.every((run) => new Set(run.map(key)).size === run.length));
+  check(a.runs[0].length === 2 && a.end.id === "310122" && a.end.next === "517981" && b.runs[0].length === 4 && b.end.id === "518878" &&
+        c.runs[0].length === 4 && c.end.id === "547935" && noRevisit,
+        "1.30 live route: ship -> exit gate; next sector arrival -> highway entry -> exit -> gate; no polyline revisits a point");
+}
 const { STRINGS } = await import("../web/map-strings.js");
 const ek = Object.keys(STRINGS.en), hk = Object.keys(STRINGS.hu);
 check(ek.length === hk.length && ek.every((k) => hk.includes(k)) && STRINGS.hu["map.chip.ownerless"] === "Gazdátlan hajók",

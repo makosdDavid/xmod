@@ -114,6 +114,27 @@ do
     MOCK.gdt.room = obj(nid(), { class = "room", name = "Repair Terminal", sector = 501, container = host.id, x = 1, z = 1, isknown = true }).id
 end
 
+-- v1.3.1 regression: the live "Operation Draco" route (2026-11-23) - two gate hops with a local highway in each
+-- sector between them, the last gate leads to a gate the player has not discovered (isknown = false) in a known
+-- sector. MOCK.draco1_30 = what the 1.30 MD hand-over produced (both gate ends per hop -> A, B, B, A; a lane's
+-- entry/exit three times); MOCK.draco = the expected clean route.
+do
+    local function g(sec, cls, x, z, extra) local o = addobj(sec, "ownerless", cls, cls .. " " .. sec, extra); o.x, o.z = x, z; return o.id end
+    local A = g(501, "gate", 97603, -67126)
+    local B = g(502, "gate", -72404, -23213)
+    local he1 = g(502, "highwayentrygate", -19500, -65000)
+    local hx1 = g(502, "highwayexitgate", 40500, 85000)
+    local Cg = g(502, "gate", 40000, 85000)
+    local D = g(503, "gate", 50000, -110000)
+    local he2 = g(503, "highwayentrygate", 50500, -110000)
+    local hx2 = g(503, "highwayexitgate", 50500, 120000)
+    local E = g(503, "gate", -94977, 21304)
+    local F = g(504, "gate", 1000, 2000, { isknown = false })
+    MOCK.draco1_30 = { A, B, B, A, he1, hx1, he1, hx1, he1, hx1, Cg, D, D, Cg, he2, hx2, he2, hx2, E, F, F, E }
+    MOCK.draco = { A, B, he1, hx1, Cg, D, he2, hx2, E, F }
+    MOCK.dracoT = addobj(504, "argon", "station", "Draco Target").id
+end
+
 -------------------------------------------------------------------------------- ffi.C mock
 local function n64(v) return tonumber(v) end
 local function O(id) return W.objs[n64(id)] end
@@ -295,7 +316,8 @@ function GetComponentData(id, ...)
     for i = 1, n do
         local p = select(i, ...)
         local k = PROPS[p]
-        local v = k and o[k] or nil
+        local v = nil
+        if k then v = o[k] end            -- keeps false (isknown = false is a real answer of the game)
         if p == "uirelation" then v = (o.owner == "xenon") and -30 or 5 end
         if p == "isenemy" then v = o.owner == "xenon" end
         if p == "ishostile" then v = o.owner == "xenon" end

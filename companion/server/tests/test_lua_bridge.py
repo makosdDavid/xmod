@@ -101,8 +101,27 @@ def guidance_checks(src: str) -> None:
     check(t.get("x") is not None and t.get("nk") and "n" not in t and "SECRET" not in txt,
           f"guidance to an undiscovered object in a known sector: shown (position) like the game, without its name ({t})")
 
+    # v1.3.1 regression (live 2026-11-23, "Operation Draco"): the 1.30 MD hand-over repeated both gate ends of
+    # each hop and the highway lanes (A, B, B, A, he, hx x3 ...); the route must hold every point once, in order,
+    # and - as the game found a known path - an undiscovered gate in a known sector does not cut it
+    draco = [int(x) for x in M.draco.values()]
+    M.objtargets = lt([int(M.dracoT)]); M.gdpath = lt([int(x) for x in M.draco1_30.values()]); M.gdknown = 1
+    pl, _, _ = run(2.5)                        # incl. one stats message after the MD reply
+    gd = pl.get("gd") or {}
+    ids = [int(p["id"]) for p in gd.get("r") or []]
+    st = [json.loads(s) for s in M.out.values() if '"type":"stats"' in s][-1]
+    check(ids == draco and not gd.get("cut") and len(set(ids)) == len(ids),
+          f"regression 'Operation Draco': no back-steps, each highway entry/exit once, known path not cut ({len(ids)} points, cut={gd.get('cut')})")
+    check(str(st.get("gd", {}).get("seq", "")).startswith("g,g,g,g,he,hx"), f"stats.gd.seq keeps the class sequence MD handed over ({st.get('gd', {}).get('seq')})")
+    M.gdknown = 0
+    pl, _, _ = run(11.0)                       # the periodic re-request (10 s) picks up the unknown-path case
+    ids0 = [int(p["id"]) for p in (pl.get("gd") or {}).get("r") or []]
+    check(ids0 == draco[:-1] and (pl.get("gd") or {}).get("cut"),
+          f"no known path (game fallback): the route stops before the undiscovered gate ({len(ids0)} points, cut={(pl.get('gd') or {}).get('cut')})")
+    M.gdknown = None
+
     M.objtargets = lt([]); M.gdpath = lt([]); M.gdwp = gates[2]
-    pl, _, _ = run()
+    pl, _, _ = run(2.0)                        # the targets are probed once a second
     gd = pl.get("gd") or {}
     check([p["id"] for p in gd.get("r") or []] == [str(gates[2])] and "t" not in gd,
           f"guidance without a UI target: the game's own next hop (activemissionwaypoint) as the route ({gd.get('r')})")

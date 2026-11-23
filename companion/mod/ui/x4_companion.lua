@@ -85,7 +85,7 @@ local C = rawget(_G, "__X4COMPANION_TEST_C") or ffi.C
 local K = ffi.C   -- Windows kernel32 (QueryPerformanceCounter) - not a game function
 
 local MOD = "x4_companion"
-local VERSION = "130"   -- v1.3: mission guidance ("gd" in the player message)
+local VERSION = "131"   -- v1.3: mission guidance ("gd" in the player message); .1: route without back-steps
 
 -------------------------------------------------------------------------------
 -- ffi declarations: only what is still missing. Vanilla menus declare all of these
@@ -892,13 +892,17 @@ local function gdTarget(t, now)
 end
 -- MD reply (md\x4_companion_guidance.xml): the expanded path components in order, [known, n], waypoint
 local GATE_K = { gate = "g", highwayentrygate = "he", highwayexitgate = "hx" }
-local function gdPoint(id, now)
+-- knownpath: MD found the path over sectors the player knows (get_global_path useknownpath="true", the
+-- game's own judgement): then an undiscovered gate inside a known sector does not end the shown route
+-- (v1.3.1, live: the route to "Operation Draco" was cut at a gate the game still guides through); an
+-- undiscovered sector always does.
+local function gdPoint(id, now, knownpath)
     local cls = className(id)
     local k = GATE_K[cls]
     if not k then return nil end
     local sec = sectorOf(id)
     if not sectorKnown(sec, now) then return false, "sector" end
-    if S("gd.gknown", GetComponentData, id, "isknown") == false then return false, "gate" end
+    if not knownpath and S("gd.gknown", GetComponentData, id, "isknown") == false then return false, "gate" end
     local x, _, z = posOf(id)
     return { s = idstr(sec), x = x, z = z, id = idstr(id), k = k }
 end
@@ -916,10 +920,18 @@ local function onGuidance(_, n)
     local now = realtime()
     local pts, cut = arr(), false
     local tid = GD.targets[1] or 0
+    GD.known = type(info) == "table" and tonumber(info[1]) or nil
+    local knownpath = GD.known == 1
+    -- v1.3.1: every component once, in path order (the 1.30 MD hand-over repeated both ends of each gate hop
+    -- and local highway lanes: A, B, B, A, he, hx, he, hx ... - the line stepped back and forth); the class
+    -- sequence MD handed over is kept for the stats (verification in the game)
+    local seen, seq = {}, {}
     for _, comp in ipairs(type(list) == "table" and list or {}) do
         local id = to64(comp)
-        if id ~= 0 and id ~= tid then
-            local p, why = gdPoint(id, now)
+        if #seq < 48 then seq[#seq + 1] = GATE_K[className(id)] or "o" end
+        if id ~= 0 and id ~= tid and not seen[id] then
+            seen[id] = true
+            local p, why = gdPoint(id, now, knownpath)
             if p == false then
                 -- the next step leads into an undiscovered sector: the gate that leads there is not part of
                 -- the shown guidance either (the game shows no guidance towards an unknown next sector)
@@ -933,11 +945,11 @@ local function onGuidance(_, n)
     GD.wp = to64(wp)
     if #pts == 0 and not cut and GD.wp ~= 0 then
         -- no path from MD (no target from the UI side): the game's own next hop at least
-        local p = gdPoint(GD.wp, now)
+        local p = gdPoint(GD.wp, now, knownpath)
         if p == false then cut = true elseif p then pts[1] = p end
     end
     GD.route, GD.cut = pts, cut
-    GD.known = type(info) == "table" and tonumber(info[1]) or nil
+    GD.seq = tconcat(seq, ",")
     GD.wpok = nil
     if GD.wp ~= 0 then
         GD.wpok = false
@@ -2141,7 +2153,7 @@ defchan("stats", { every = 2, max = 2, budget = 1,
                -- v1.3 guidance diagnostics: route requests / MD replies, objective-target index base, number of
                -- targets, whether the game's own next hop (activemissionwaypoint) is on the MD route, known path
                gd = { req = GD.nreq, rx = GD.nrx, base = GD.base, nt = #GD.targets, wp = GD.wp ~= 0 and idstr(GD.wp) or nil,
-                      wpok = GD.wpok, known = GD.known, np = GD.route and #GD.route or nil, cut = GD.cut or nil },
+                      wpok = GD.wpok, known = GD.known, np = GD.route and #GD.route or nil, cut = GD.cut or nil, seq = GD.seq },
                nframe = W.n_frame, nmd = W.n_md, watch = W.watch ~= 0 and idstr(W.watch) or nil })
         W.frame_ms_sum, W.frame_ms_max, W.frame_n, W.frame_ops_sum = 0, 0, 0, 0
         return true

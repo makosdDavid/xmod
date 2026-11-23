@@ -484,6 +484,19 @@ export function overlayModes(w, h) {
 //     target: {id, s, x, z, n, c, in, nk} | null, targetSid, sectors: [sid, ...] in route order from the
 //     player's sector, jumps: sector changes until the end of the known route (null = unknown) }
 const num = (v) => typeof v === "number" && Number.isFinite(v);
+// A route visits every point once, in order. The 1.30 bridge (live 2026-11-23) repeated both ends of each gate
+// hop and the local highway lanes (A, B, A, he, hx, he, hx, he, hx, C, D, C ...): keep the first occurrence of
+// each point (by id, else by sector + position) - the counterpart back-steps and repeated entry/exit pairs go.
+export function normaliseRoute(pts) {
+  const seen = new Set(), out = [];
+  for (const q of pts || []) {
+    const key = q.id ? "i" + q.id : "p" + q.s + ":" + q.x + ":" + q.z;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+  }
+  return out;
+}
 export function guidanceModel(S) {
   const p = S && S.player;
   if (!p) return null;
@@ -493,8 +506,8 @@ export function guidanceModel(S) {
     const base = { kind: gd.k === "course" ? "course" : "mission", mid: gd.mid ? String(gd.mid) : null, name: gd.n || null,
                    ob: gd.ob || null, legacy: false, off: !!gd.off, pending: !!gd.rq, hidden: !!gd.th, cut: !!gd.cut, tn: gd.tn || 1 };
     if (gd.off) return { ...base, pts: [], target: null, targetSid: null, sectors: [], jumps: 0 };
-    const pts = (Array.isArray(gd.r) ? gd.r : []).filter((q) => q && q.s !== undefined && q.s !== null && num(q.x) && num(q.z))
-      .map((q) => ({ s: String(q.s), x: q.x, z: q.z, id: q.id ? String(q.id) : null, k: q.k || "g" }));
+    const pts = normaliseRoute((Array.isArray(gd.r) ? gd.r : []).filter((q) => q && q.s !== undefined && q.s !== null && num(q.x) && num(q.z))
+      .map((q) => ({ s: String(q.s), x: q.x, z: q.z, id: q.id ? String(q.id) : null, k: q.k || "g" })));
     const t = gd.t && gd.t.s !== undefined && gd.t.s !== null ? {
       id: gd.t.id ? String(gd.t.id) : null, s: String(gd.t.s), x: num(gd.t.x) ? gd.t.x : null, z: num(gd.t.z) ? gd.t.z : null,
       n: gd.t.n || null, c: gd.t.c || null, in: gd.t.in || null, nk: !!gd.t.nk } : null;

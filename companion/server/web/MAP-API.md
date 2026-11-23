@@ -158,7 +158,7 @@ returns their rectangles (tests use it).
   "objective · N km" or "→ next · target sector, N jumps"; hover = tooltip, click on the marker = select the
   target. Galaxy view and mini galaxy: the same route through each hop's gate positions, target sector
   outlined. Old bridge (only `player.guidance`): a straight line only to a target in the player's own sector,
-  never a guessed route. Pure helpers: `guidanceModel(S)`, `guidanceRuns(model, sid, from)` (mapstyle.js).
+  never a guessed route. Pure helpers: `guidanceModel(S)`, `guidanceRuns(model, sid, from)`, `normaliseRoute(pts)` (mapstyle.js; every route point once, in order - the 1.30 bridge repeated gate ends and highway pairs).
 * Galaxy view: one flat-top hexagon per cluster (radius = the cluster grid edge, 1e7 m) with an
   owner-coloured outline; sectors: 1 → fills it, 2–3 → half-radius hexagons whose outer vertex is a
   cluster vertex (corners nobody occupies stay black), 4–7 → third-radius hex flower. `clusterLayout()`
