@@ -29,9 +29,9 @@ export function ControlMenu() {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" title={t("control.tip")}
-            className={cn("h-7 gap-1.5 px-2 text-xs", on && "border-[#ffa050]/70 bg-[#ff8c32]/15 text-[#ffc590] hover:bg-[#ff8c32]/25")}>
+            className={cn("h-7 gap-1.5 px-2 text-xs", on && "border-warn bg-warn/15 text-warn hover:border-warn hover:bg-warn/25 hover:text-warn")}>
             <Gamepad2 className="size-3.5" />{t("control.button")}
-            <Badge variant="outline" className={cn("h-4 px-1 text-[0.6rem]", on ? "border-[#ffa050]/70 text-[#ffc590]" : "text-muted-foreground")}>
+            <Badge variant="outline" className={cn("h-4 px-1 text-[0.6rem]", on ? "border-warn text-warn" : "text-muted-foreground")}>
               {on ? t("control.on") : t("control.off")}
             </Badge>
           </Button>

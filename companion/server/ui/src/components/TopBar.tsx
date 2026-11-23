@@ -26,7 +26,7 @@ const STATE_TONE: Record<string, string> = {
 function Group({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <div className={cn("flex min-w-0 items-center gap-2 overflow-hidden", className)}>
-      <span className="hidden shrink-0 text-[0.65rem] font-medium tracking-[0.09em] text-muted-foreground uppercase lg:inline">{label}</span>
+      <span className="hidden shrink-0 text-[0.65rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase lg:inline">{label}</span>
       {children}
     </div>
   );
@@ -40,7 +40,7 @@ export function StateBadge() {
   const age = toNum(S.status && S.status.last_rx_age);
   return (
     <span className="flex shrink-0 items-center gap-1.5">
-      <Badge variant="outline" className={cn("h-5 rounded-full px-2 text-[0.7rem] font-semibold", STATE_TONE[st] || "border-bad/50 bg-bad/10 text-bad")}
+      <Badge variant="outline" className={cn("h-5 rounded-sm px-2 text-[0.7rem] font-semibold tracking-[0.08em] uppercase", STATE_TONE[st] || "border-bad/70 bg-bad/10 text-bad")}
         title={t("state.tip", { state: t("state." + st) })}>
         <span className={cn("mr-1 inline-block size-1.5 rounded-full bg-current", st === "live" && "animate-pulse")} />
         {t("state." + st)}
@@ -69,12 +69,12 @@ export function LangFontControls() {
           <SelectItem value="hu">HU · {t("lang.hu")}</SelectItem>
         </SelectContent>
       </Select>
-      <div className="flex items-center rounded-md border" role="group" aria-label={t("font.label")}>
+      <div className="flex items-center rounded-sm border border-input" role="group" aria-label={t("font.label")}>
         <Tooltip><TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="size-7 rounded-r-none" disabled={font <= FONT_STEPS[0]} onClick={() => fontStep(-1)} aria-label={t("font.smaller")}><AArrowDown /></Button>
         </TooltipTrigger><TooltipContent>{t("font.smaller")}</TooltipContent></Tooltip>
         <Tooltip><TooltipTrigger asChild>
-          <button type="button" onClick={() => setFont(100)} className="h-7 min-w-11 border-x px-1 text-[0.7rem] tabular-nums text-muted-foreground hover:text-foreground">{font}%</button>
+          <button type="button" onClick={() => setFont(100)} className="h-7 min-w-11 border-x border-input px-1 text-[0.7rem] tabular-nums text-muted-foreground hover:bg-accent hover:text-foreground">{font}%</button>
         </TooltipTrigger><TooltipContent>{t("font.reset")}</TooltipContent></Tooltip>
         <Tooltip><TooltipTrigger asChild>
           <Button variant="ghost" size="icon" className="size-7 rounded-l-none" disabled={font >= FONT_STEPS[FONT_STEPS.length - 1]} onClick={() => fontStep(1)} aria-label={t("font.larger")}><AArrowUp /></Button>
@@ -133,9 +133,9 @@ export function TopBar() {
   const shipName = o ? joinParts([text(o.name), text(o.code) ? `(${o.code})` : null], " ") : null;
   const targetText = tg ? joinParts([text(tg.name) ?? "?", f.dist(tg.dist), f.pct(tg.hull)]) : null;
   return (
-    <header className="flex h-12 shrink-0 items-center gap-4 overflow-hidden border-b bg-gradient-to-b from-[oklch(0.2_0.04_255)] to-[oklch(0.16_0.03_255)] px-3 whitespace-nowrap">
-      <div className="flex shrink-0 items-center gap-2 font-semibold tracking-wide">
-        <span className="rounded bg-gradient-to-br from-[#46b3ff] to-[#1f6fd6] px-1.5 text-[0.8rem] font-extrabold text-white">X4</span>
+    <header className="flex h-12 shrink-0 items-center gap-4 overflow-hidden border-b border-input bg-card px-3 whitespace-nowrap">
+      <div className="flex shrink-0 items-center gap-2 font-semibold tracking-[0.08em] uppercase">
+        <span className="rounded-sm border border-primary x4-head px-1.5 text-[0.8rem] font-bold">X4</span>
         <span className="hidden 2xl:inline">Companion</span>
       </div>
       <StateBadge />

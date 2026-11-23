@@ -109,7 +109,7 @@ export function InfoView({ compact = false }: { compact?: boolean }) {
           <div className="flex flex-wrap gap-1">
             {m.subordinates.map((e) => (
               <button key={e.id} data-key={"s-" + e.id} type="button" onClick={() => select({ kind: "obj", id: e.id, from: "info" })}
-                className="max-w-full truncate rounded border border-border/60 px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10">{e.label}</button>
+                className="max-w-full truncate rounded-sm border border-input px-1.5 py-0.5 text-xs text-primary hover:border-primary hover:bg-accent">{e.label}</button>
             ))}
           </div>
         </>
@@ -120,7 +120,7 @@ export function InfoView({ compact = false }: { compact?: boolean }) {
           <div className="flex flex-wrap gap-1">
             {m.ownHere.map((e) => (
               <button key={e.id} data-key={"h-" + e.id} type="button" onClick={() => select({ kind: "obj", id: e.id, from: "info" })}
-                className="max-w-full truncate rounded border border-border/60 px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10">{e.label}</button>
+                className="max-w-full truncate rounded-sm border border-input px-1.5 py-0.5 text-xs text-primary hover:border-primary hover:bg-accent">{e.label}</button>
             ))}
           </div>
         </>

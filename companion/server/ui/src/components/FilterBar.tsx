@@ -23,7 +23,7 @@ export function FilterBar({ value, onChange, options, wideAt = "30rem", label, c
         className={cn("hidden flex-wrap justify-start gap-1", wide)}>
         {options.map((o) => (
           <ToggleGroupItem key={o.value} value={o.value} title={o.tip} size="sm"
-            className="h-7 flex-none rounded-full border border-border/60 px-2.5 text-xs data-[state=on]:border-primary/60 data-[state=on]:bg-primary/15 data-[state=on]:text-foreground">
+            className="h-7 flex-none rounded-sm border border-input px-2.5 text-xs data-[state=on]:x4-on">
             {o.label}{badge(o)}
           </ToggleGroupItem>
         ))}

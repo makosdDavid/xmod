@@ -72,7 +72,7 @@ export function DiagPanel() {
             </thead>
             <tbody>
               {ch.map(([k, c]) => (
-                <tr key={k} data-key={"c-" + k} className={cn("border-b border-border/40", c.off && "text-[#ffb1a8]")}>
+                <tr key={k} data-key={"c-" + k} className={cn("border-b border-border/40", c.off && "text-enemy")}>
                   <td className="truncate px-1.5 py-0.5">{k}{c.off && <Badge variant="destructive" className="ml-1 h-4 px-1 text-[0.6rem]">{t("diag.off_badge")}</Badge>}</td>
                   {CH_COLS.map((col) => (
                     <td key={col.k} className={cn("truncate px-1.5 py-0.5 text-right", col.at && "hidden " + col.at)} title={col.k === "err" ? c.le || "" : undefined}>

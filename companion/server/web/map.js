@@ -24,7 +24,11 @@ import { withFallback } from "./map-strings.js";
 const HEX = CLUSTER_R;           // cluster grid edge length (vanilla menu_mapeditor.lua:163)
 const DRAW_R = HEX * 0.97;       // drawn cluster radius (a thin gap between neighbouring clusters)
 const GRID_STEPS = [500, 1000, 2000, 5000, 10000, 20000, 25000, 50000, 100000, 200000, 500000, 1e6, 2e6, 5e6, 1e7, 2e7, 5e7];
-const FONT = '"Segoe UI", "Inter", system-ui, sans-serif';
+const DEFAULT_FONT = '"Segoe UI", "Inter", system-ui, sans-serif';
+// canvas label font; a host may set the CSS custom property --x4map-font (MAP-API.md "Look")
+let FONT = DEFAULT_FONT;
+// mini galaxy frame (fill, stroke, corner radius); CSS --x4map-mini-fill / -stroke / -radius
+const DEFAULT_MINI = { fill: "rgba(6,12,24,0.86)", stroke: "rgba(120,170,230,0.25)", radius: 8 };
 // the v1.1 defaults, unchanged (stored settings are not migrated)
 const DEFAULTS = { labels: "auto", npc: true, grid: true, mini: true, radar: true, lines: true, hull: true,
                    factioncol: false, rotate: false, iconscale: 1, mode: "sector", ret: 8, legend: false, ownerless: true, resources: true, highways: true };
@@ -239,6 +243,7 @@ export class MapView {
     body.classList.add("mapbody");
     if (!body.style.position && this.win.getComputedStyle && this.win.getComputedStyle(body).position === "static") body.style.position = "relative";
     this.layerBox = this.mk("div", { class: "layerbox" }, this.layersBtn, this.layers);
+    this.readLook();
     const kids = [this.canvas, this.info, this.layerBox, this.legendBox, this.zoomBox, this.legendBtn, this.miniBtn, this.followBadge, this.backBtn, this.tip];
     body.prepend(...kids);
     this._added.push(...kids);
@@ -248,6 +253,24 @@ export class MapView {
   }
 
   save() { saveSettings(this.settingsKey, this.cfg); }
+
+  // optional host look (MAP-API.md "Look"): CSS custom properties on the container or an ancestor;
+  // without them the built-in defaults (unchanged since v1.1) apply. Read once, when the map is built.
+  readLook() {
+    let cs = null;
+    try { cs = this.win.getComputedStyle ? this.win.getComputedStyle(this.body) : null; } catch { cs = null; }
+    const v = (name) => (cs && cs.getPropertyValue(name) || "").trim();
+    FONT = v("--x4map-font") || DEFAULT_FONT;
+    const r = parseFloat(v("--x4map-mini-radius"));
+    this.miniLook = { fill: v("--x4map-mini-fill") || DEFAULT_MINI.fill, stroke: v("--x4map-mini-stroke") || DEFAULT_MINI.stroke,
+                      radius: Number.isFinite(r) ? Math.max(0, r) : DEFAULT_MINI.radius };
+    // a web font that loads after the first frame: draw again once it is there
+    const fonts = this.doc && this.doc.fonts;
+    if (fonts && fonts.load && FONT !== DEFAULT_FONT && !this._fontWait) {
+      this._fontWait = true;
+      Promise.all([fonts.load(`12px ${FONT}`), fonts.load(`bold 9px ${FONT}`)]).then(() => { this.dirty = true; }, () => {});
+    }
+  }
 
   // every user-facing text of the chrome (re-run by setTranslator)
   applyTexts() {
@@ -1850,8 +1873,9 @@ export class MapView {
     if (!cur || !mr) return;
     const W = mr.r - mr.l, H = mr.b - mr.t, X = mr.l, Y = mr.t;
     g.save();
-    roundRect(g, X, Y, W, H, 8);
-    g.fillStyle = "rgba(6,12,24,0.86)"; g.fill(); g.strokeStyle = "rgba(120,170,230,0.25)"; g.stroke();
+    const look = this.miniLook || DEFAULT_MINI;
+    roundRect(g, X, Y, W, H, look.radius);
+    g.fillStyle = look.fill; g.fill(); g.strokeStyle = look.stroke; g.stroke();
     g.clip();
     const sc = (Math.min(W, H) / 2) / (HEX * 3.2);
     const ox = cg ? cg.x : 0, oz = cg ? cg.z : 0;

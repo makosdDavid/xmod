@@ -23,10 +23,10 @@ export function InfoSheet({ single = false }: { single?: boolean }) {
   const open = !!S.selected && !infoOnScreen;
   return (
     <Sheet open={open} modal={false} onOpenChange={(o) => { if (!o) select(null); }}>
-      <SheetContent side="right" className="top-24 bottom-3 h-auto w-[23rem] gap-0 rounded-l-lg border-primary/30 p-0 sm:max-w-[23rem]"
+      <SheetContent side="right" className="top-24 bottom-3 h-auto w-[23rem] gap-0 rounded-l-sm border border-r-0 border-input p-0 sm:max-w-[23rem]"
         onInteractOutside={(e) => e.preventDefault()} onOpenAutoFocus={(e) => e.preventDefault()}>
-        <SheetHeader className="border-b px-4 py-2.5">
-          <SheetTitle className="text-sm">{t("modules.info")}</SheetTitle>
+        <SheetHeader className="border-b border-input x4-head px-4 py-2.5">
+          <SheetTitle className="text-[0.8rem] font-semibold text-foreground">{t("modules.info")}</SheetTitle>
           <SheetDescription className="sr-only">{t("info.details_title")}</SheetDescription>
         </SheetHeader>
         <FitScroll className="@container"><InfoView /></FitScroll>
@@ -58,12 +58,12 @@ export function AlertBanner({ inline = false }: { inline?: boolean }) {
   return (
     <div className={inline ? "flex min-w-0 justify-center" : "pointer-events-none fixed top-12 right-3 z-40"}>
       <div key={flash} role="alert" title={t("alert.tip")}
-        className="alert-flash pointer-events-auto flex h-8 max-w-full min-w-0 items-center gap-2 rounded-lg border border-bad/80 bg-[oklch(0.25_0.09_25/0.96)] py-1 pr-1 pl-3 text-sm font-semibold text-[#ffd7d3] shadow-xl">
+        className="alert-flash pointer-events-auto flex h-8 max-w-full min-w-0 items-center gap-2 rounded-sm border border-bad bg-black py-1 pr-1 pl-3 text-sm font-semibold text-white shadow-[0_0_10px_rgb(255_0_0/0.45)]">
         <button type="button" onClick={go} className="flex min-w-0 items-center gap-2">
           <TriangleAlert className="size-4 shrink-0" />
           <span className="truncate">{last.ti || t("alert.default")}{items.length > 1 ? "  " + t("alert.more", { n: items.length - 1 }) : ""}</span>
         </button>
-        <button type="button" onClick={() => setItems(null)} aria-label={t("alert.dismiss")} className="rounded p-1 hover:bg-white/10"><X className="size-3.5" /></button>
+        <button type="button" onClick={() => setItems(null)} aria-label={t("alert.dismiss")} className="rounded-sm p-1 hover:bg-white/15"><X className="size-3.5" /></button>
       </div>
     </div>
   );
@@ -79,8 +79,8 @@ export function StaleBanner({ inline = false }: { inline?: boolean }) {
   const Icon = bad ? WifiOff : PauseCircle;
   return (
     <div className={inline ? "flex min-w-0 justify-center" : "pointer-events-none fixed bottom-3.5 left-1/2 z-[39] -translate-x-1/2"}>
-      <div title={t("stale." + st)} className={cn("flex h-8 min-w-0 items-center gap-2 rounded-lg border px-3 text-sm shadow-xl",
-        bad ? "border-bad/70 bg-[oklch(0.22_0.07_25/0.95)] text-[#ffcdc7]" : "border-warn/70 bg-[oklch(0.25_0.06_80/0.95)] text-[#ffe6ad]")}>
+      <div title={t("stale." + st)} className={cn("flex h-8 min-w-0 items-center gap-2 rounded-sm border bg-black px-3 text-sm font-semibold",
+        bad ? "border-bad text-bad" : "border-warn text-warn")}>
         <Icon className="size-4 shrink-0" /><span className="truncate">{t("stale." + st)}</span>
       </div>
     </div>

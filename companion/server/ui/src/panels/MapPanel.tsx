@@ -50,14 +50,14 @@ export function MapPanel({ mode, collapsed, parentDir }: { mode: FrameMode; coll
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={bodyRef} className="x4map-slot absolute inset-0 flex flex-col" />
         {hint && anchor && !collapsed && (
-          <div role="note" className="absolute z-20 w-72 rounded-lg border border-primary/50 bg-popover/95 p-3 text-xs shadow-xl backdrop-blur"
+          <div role="note" className="absolute z-20 w-72 rounded-sm x4-float p-3 pt-0 text-xs"
             style={{ top: anchor.top, right: anchor.right }}>
-            <div className="mb-1 flex items-center gap-2 font-semibold text-foreground">
-              <Layers className="size-4 text-primary" />{t("maphint.title")}
-              <button type="button" onClick={dismiss} aria-label={t("maphint.ok")} className="ml-auto rounded p-0.5 text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>
+            <div className="-mx-3 mb-2 flex items-center gap-2 x4-head px-3 py-1.5">
+              <Layers className="size-4" />{t("maphint.title")}
+              <button type="button" onClick={dismiss} aria-label={t("maphint.ok")} className="ml-auto rounded-sm p-0.5 text-foreground/80 hover:bg-selected hover:text-foreground"><X className="size-3.5" /></button>
             </div>
             <p className="text-muted-foreground">{t("maphint.text")}</p>
-            <button type="button" onClick={dismiss} className="mt-2 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground hover:bg-primary/90">{t("maphint.ok")}</button>
+            <button type="button" onClick={dismiss} className="mt-2 rounded-sm border border-primary/70 bg-panel-head px-2.5 py-1 font-medium text-foreground hover:border-primary hover:x4-glow">{t("maphint.ok")}</button>
           </div>
         )}
       </div>

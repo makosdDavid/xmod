@@ -3,61 +3,137 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* X4 Companion — dark only, the game's look: near-black / deep navy panels, azure accents
-   (libraries\colors.xml: azure UI accents, white text). System fonts only (no external requests). */
+/* X4 Companion — the look of X4: Foundations' own menus (dark only).
+   One place for the whole look: the game colours below, the font, the radius. Components use the shadcn
+   tokens (background, card, primary, accent, border, ring…) and the x4-* utilities at the end of this file.
+
+   Colours: 1:1 from the game's libraries/colors.xml, UI mapping -> colour id (line numbers of the 9.x file).
+   Values that are NOT in the game files are marked "not a game value".
+   Font: Titillium Web (SIL OFL 1.1, assets/fonts/titillium/LICENSE.txt), bundled, no external requests —
+   a free look-alike; X4's own fonts are engine bitmap fonts that are neither usable nor redistributable. */
+
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-ext-400-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-ext-600-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-ext-700-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "X4UI"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("./assets/fonts/titillium/titillium-web-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+
 :root {
-  --radius: 0.5rem;
-  --background: oklch(0.13 0.025 255);
-  --foreground: oklch(0.93 0.015 250);
-  --card: oklch(0.17 0.03 255);
-  --card-foreground: oklch(0.93 0.015 250);
-  --popover: oklch(0.18 0.032 255);
-  --popover-foreground: oklch(0.93 0.015 250);
-  --primary: oklch(0.68 0.16 245);
-  --primary-foreground: oklch(0.14 0.03 255);
-  --secondary: oklch(0.24 0.04 255);
-  --secondary-foreground: oklch(0.9 0.02 250);
-  --muted: oklch(0.22 0.035 255);
-  --muted-foreground: oklch(0.68 0.035 250);
-  --accent: oklch(0.27 0.06 250);
-  --accent-foreground: oklch(0.96 0.01 250);
-  --destructive: oklch(0.64 0.21 25);
-  --border: oklch(0.7 0.08 250 / 0.16);
-  --input: oklch(0.7 0.08 250 / 0.24);
-  --ring: oklch(0.68 0.16 245);
-  --chart-1: oklch(0.68 0.16 245);
-  --chart-2: oklch(0.75 0.15 160);
-  --chart-3: oklch(0.8 0.14 85);
-  --chart-4: oklch(0.65 0.2 25);
-  --chart-5: oklch(0.7 0.12 300);
-  --sidebar: oklch(0.15 0.028 255);
-  --sidebar-foreground: oklch(0.93 0.015 250);
-  --sidebar-primary: oklch(0.68 0.16 245);
-  --sidebar-primary-foreground: oklch(0.14 0.03 255);
-  --sidebar-accent: oklch(0.27 0.06 250);
-  --sidebar-accent-foreground: oklch(0.96 0.01 250);
-  --sidebar-border: oklch(0.7 0.08 250 / 0.16);
-  --sidebar-ring: oklch(0.68 0.16 245);
+  /* ---- the game's colours (colors.xml) */
+  --x4-azure-bright: #4db5ff;                    /* azure_bright :222 (checkbox_highlight, statusbar_value_default) */
+  --x4-azure: #0095ff;                           /* azure :210 (button_highlight_default, scrollbar_slider_normal) */
+  --x4-azure-dark: #0069b3;                      /* azure_dark :228 */
+  --x4-azure-very-dark: #003c66;                 /* azure_very_dark :235 (button_background_default :381) */
+  --x4-header: rgba(0, 105, 179, 0.627);         /* row_title :375 -> azure_dark_alpha_160 :232 */
+  --x4-subheader: rgba(0, 60, 102, 0.878);       /* row_title_background :376 -> azure_very_dark_alpha_224 :239 */
+  --x4-selected: rgba(77, 181, 255, 0.627);      /* row_background_selected :367 -> azure_bright_alpha_160_glow :226 */
+  /* the two bars composited over the black panel, for sticky headers that rows scroll under (same look, opaque) */
+  --x4-header-solid: rgb(0, 66, 112);
+  --x4-subheader-solid: rgb(0, 53, 90);
+  --x4-button-border: rgba(0, 105, 179, 0.627);  /* button_border_default :393 -> azure_dark_alpha_160_glow :233 */
+  --x4-panel: rgba(0, 0, 0, 0.973);              /* frame_background_semitransparent :343 -> black_alpha_248 :58 */
+  --x4-frame: rgba(255, 255, 255, 0.047);        /* frameborder_default :346 -> white_alpha_12 :49 */
+  --x4-separator: rgba(128, 128, 128, 0.35);     /* row_separator :372 -> grey_128 :77, alpha softened (not a game value) */
+  --x4-text: #ffffff;                            /* text_normal :267 -> white_weak_glow :42 */
+  --x4-text-low: #c0c0c0;                        /* text_lowlight :268 -> grey_192 :86 */
+  --x4-text-off: #808080;                        /* text_inactive :269 -> grey_128 :77 */
+  --x4-warning: #ff8b00;                         /* text_warning :275 -> orange_glow :119 */
+  --x4-error: #ff0000;                           /* text_error :274 -> red_moderate_glow :92 */
+  --x4-positive: #00ff00;                        /* text_positive :276 -> green_weak_glow :171 */
+  --x4-neutral: #ffff99;                         /* text_neutral :277 -> yellow_very_bright_glow :161 */
+  --x4-mission: #ffbf00;                         /* text_mission :310 -> amber_glow :140 */
+  --x4-friend: #99ff99;                          /* text_friend :286 -> green_very_bright_weak_glow :178 */
+  --x4-enemy: #ff9999;                           /* text_enemy :288 -> red_very_bright_weak_glow :96 */
+  --x4-shield: #0095ff;                          /* shieldhullbar_shield :452 -> azure_glow :216 */
+  --x4-hull: #ffffff;                            /* shieldhullbar_hull :453 -> white_moderate_glow :43 */
+  --x4-danger-bg: rgba(179, 0, 0, 0.627);        /* red_dark_alpha_160 :110 (a destructive button's fill) */
+  --x4-black: #000000;                           /* black :52 (dropdown_background_options :406) */
+  --x4-grey-8: #080808;                          /* grey_8 :59 (the page behind the panels) */
+  --x4-grey-32: #202020;                         /* grey_32 :63 (button_background_inactive :383) */
+  /* the game draws "_glow" colours with an engine bloom; a soft shadow stands in (not a game value) */
+  --x4-glow: rgba(77, 181, 255, 0.5);
+  --x4-glow-shadow: 0 0 8px var(--x4-glow);
+  --x4-glow-inset: inset 0 0 10px rgba(77, 181, 255, 0.45);
+  --x4-tracking: 0.08em;
+
+  /* ---- shadcn tokens, all mapped onto the game colours */
+  --radius: 0.125rem;
+  --background: var(--x4-grey-8);
+  --foreground: var(--x4-text);
+  --card: var(--x4-panel);
+  --card-foreground: var(--x4-text);
+  --popover: var(--x4-black);
+  --popover-foreground: var(--x4-text);
+  --primary: var(--x4-azure-bright);
+  --primary-foreground: var(--x4-black);
+  --secondary: var(--x4-azure-very-dark);
+  --secondary-foreground: var(--x4-text);
+  --muted: var(--x4-grey-32);
+  --muted-foreground: var(--x4-text-low);
+  --accent: var(--x4-subheader);
+  --accent-foreground: var(--x4-text);
+  --destructive: var(--x4-error);
+  --border: var(--x4-separator);
+  --input: var(--x4-button-border);
+  --ring: var(--x4-azure-bright);
+  --chart-1: #ff4d4d;   /* graph_data_1 -> red_bright :102 */
+  --chart-2: #ffb966;   /* graph_data_2 -> orange_bright :123 */
+  --chart-3: #00b300;   /* graph_data_3 -> green_dark :186 */
+  --chart-4: #99ff99;   /* graph_data_4 -> green_very_bright :177 */
+  --chart-5: #00afb3;   /* graph_data_5 -> cyan_dark :201 */
+  --sidebar: var(--x4-panel);
+  --sidebar-foreground: var(--x4-text);
+  --sidebar-primary: var(--x4-azure-bright);
+  --sidebar-primary-foreground: var(--x4-black);
+  --sidebar-accent: var(--x4-subheader);
+  --sidebar-accent-foreground: var(--x4-text);
+  --sidebar-border: var(--x4-separator);
+  --sidebar-ring: var(--x4-azure-bright);
 
   /* app-specific */
-  --ok: oklch(0.78 0.17 155);
-  --warn: oklch(0.8 0.14 80);
-  --bad: oklch(0.66 0.21 25);
-  --gold: oklch(0.86 0.13 90);
-  --pos: oklch(0.78 0.15 155);
-  --neg: oklch(0.7 0.17 30);
-  --hull: oklch(0.94 0.01 250);
-  --shield: oklch(0.68 0.16 245);
-  --panel-head: oklch(0.19 0.035 255);
-  --font-sans-stack: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --ok: var(--x4-positive);
+  --warn: var(--x4-warning);
+  --bad: var(--x4-error);
+  --gold: var(--x4-mission);
+  --pos: var(--x4-positive);
+  --neg: var(--x4-error);
+  --hull: var(--x4-hull);
+  --shield: var(--x4-shield);
+  --panel-head: var(--x4-header);
+  --sub-head: var(--x4-subheader);
+  --panel-head-solid: var(--x4-header-solid);
+  --sub-head-solid: var(--x4-subheader-solid);
+  --selected: var(--x4-selected);
+  --frame: var(--x4-frame);
+  --friend: var(--x4-friend);
+  --enemy: var(--x4-enemy);
+  --font-sans-stack: "X4UI", "Titillium Web", "Segoe UI", system-ui, sans-serif;
   --font-mono-stack: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  /* the map module reads these (web/MAP-API.md "Look"): canvas label font, mini galaxy frame */
+  --x4map-font: var(--font-sans-stack);
+  --x4map-mini-fill: var(--x4-panel);
+  --x4map-mini-stroke: var(--x4-header);
+  --x4map-mini-radius: 0;
 }
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: var(--radius);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) * 1.5);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -98,6 +174,13 @@
   --color-hull: var(--hull);
   --color-shield: var(--shield);
   --color-panel-head: var(--panel-head);
+  --color-sub-head: var(--sub-head);
+  --color-panel-head-solid: var(--panel-head-solid);
+  --color-sub-head-solid: var(--sub-head-solid);
+  --color-selected: var(--selected);
+  --color-frame: var(--frame);
+  --color-friend: var(--friend);
+  --color-enemy: var(--enemy);
   --font-sans: var(--font-sans-stack);
   --font-mono: var(--font-mono-stack);
 }
@@ -109,14 +192,64 @@
   html, body, #root {
     height: 100%;
   }
+  html {
+    /* the game's scroll bars: azure slider on nothing (scrollbar_slider_normal / scrollbar_background) */
+    scrollbar-color: var(--x4-azure) transparent;
+    scrollbar-width: thin;
+  }
   body {
     @apply bg-background text-foreground antialiased;
     margin: 0;
     overflow: hidden;
     font-family: var(--font-sans-stack);
     font-size: 0.875rem;
-    background:
-      radial-gradient(1200px 800px at 30% 15%, oklch(0.2 0.06 255 / 0.55) 0%, transparent 60%) fixed,
-      var(--background);
+    background: var(--background);
   }
+  /* form controls do not inherit the font by default */
+  button, input, select, textarea { font-family: inherit; }
+  ::selection { background: var(--x4-selected); color: #fff; }
+}
+
+/* ---- the game's menu elements as utilities (usable with variants: data-[state=on]:x4-on …) */
+/* header bar (row_title): white uppercase text on the azure bar */
+@utility x4-head {
+  background-color: var(--x4-header);
+  color: var(--x4-text);
+  text-transform: uppercase;
+  letter-spacing: var(--x4-tracking);
+  font-weight: 600;
+}
+/* sub-header (row_title_background) */
+@utility x4-subhead {
+  background-color: var(--x4-subheader);
+  color: var(--x4-text);
+  text-transform: uppercase;
+  letter-spacing: var(--x4-tracking);
+  font-weight: 600;
+}
+/* the on-state of a button / tab / toggle: azure header fill + azure border + glow.
+   !important: a state wins over the element's base / hover utilities whatever their order in the sheet */
+@utility x4-on {
+  background-color: var(--x4-header) !important;
+  border-color: var(--x4-azure-bright) !important;
+  color: var(--x4-text) !important;
+  box-shadow: var(--x4-glow-shadow) !important;
+}
+/* a selected list row (row_background_selected) with a soft glow; secondary text turns white for contrast */
+@utility x4-sel {
+  background-color: var(--x4-selected) !important;
+  color: var(--x4-text) !important;
+  box-shadow: var(--x4-glow-inset) !important;
+  --muted-foreground: var(--x4-text);
+  & [class*="text-foreground/"] { color: var(--x4-text); }
+}
+/* hover / focus glow of an interactive element */
+@utility x4-glow {
+  box-shadow: var(--x4-glow-shadow);
+}
+/* a floating frame (menus, dialogs, popovers, tooltips): black with the game's dropdown border */
+@utility x4-float {
+  background-color: var(--x4-black);
+  border: 1px solid var(--x4-button-border);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.6);
 }

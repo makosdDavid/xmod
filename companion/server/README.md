@@ -28,6 +28,11 @@ Játék nélkül: `sim.cmd` (a szimulátor ugyanazt küldi, mint a mod). Tesztek
 - Egységtesztek: `npm test` (formázók, Info-panel, elrendezésfa, en/hu kulcsegyezés); a `test.cmd` is futtatja.
 - Mentett elrendezések: a szerver `state\layouts.json`-ban tárolja (git-ignored), `--state-dir` másik mappára.
 - Nyelv: angol alapból, magyar a felső sáv nyelvválasztójában; a szövegek: `ui\src\i18n\en.json`, `hu.json`.
+- Kinézet: a játék saját menüi – színek 1:1 a játék `libraries\colors.xml` UI-leképezéseiből, egy helyen:
+  `ui\src\index.css` (tokenek + `x4-*` utility-k), a térkép kerete `ui\src\map.css`. Betűtípus: **Titillium Web**
+  (© Accademia di Belle Arti di Urbino, SIL Open Font License 1.1), helyben csomagolva:
+  `ui\src\assets\fonts\titillium\` + `LICENSE.txt`; a build a licencet a betűfájlok mellé teszi
+  (`web-dist\assets\titillium-web-OFL-1.1-LICENSE.txt`). Külső kérés nincs; a játék saját (bitmap) betűi nincsenek benne.
 
 ## Telepítés (a mod)
 

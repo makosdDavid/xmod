@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 
 function Kpi({ label, value, tone }: { label: string; value: string | null; tone?: "pos" | "neg" | "gold" }) {
   return (
-    <Card className="min-w-0 gap-0 rounded-md px-3 py-2 shadow-none">
+    <Card className="min-w-0 gap-0 rounded-sm px-3 py-2">
       <div className="truncate text-[0.65rem] tracking-wider text-muted-foreground uppercase" title={label}>{label}</div>
       <div className={cn("truncate text-base font-semibold tabular-nums", tone === "pos" && "text-pos", tone === "neg" && "text-neg", tone === "gold" && "text-gold")}
         title={value ?? ""}>{value ?? "–"}</div>
@@ -48,8 +48,8 @@ export function EconomyPanel() {
                 return (
                   <div key={(b.n || "") + i} data-key={"t" + i} className="grid grid-cols-[minmax(0,9rem)_minmax(2rem,1fr)_auto] items-center gap-2 text-[0.8rem]">
                     <span className="truncate" title={b.n || ""}>{b.n || "?"}</span>
-                    <span className="h-2 overflow-hidden rounded-full bg-white/5">
-                      <span className={cn("block h-full rounded-full", mo >= 0 ? "bg-pos" : "bg-neg")} style={{ width: `${(Math.abs(mo) / maxAbs) * 100}%` }} />
+                    <span className="h-2 overflow-hidden bg-white/5">
+                      <span className={cn("block h-full", mo >= 0 ? "bg-pos" : "bg-neg")} style={{ width: `${(Math.abs(mo) / maxAbs) * 100}%` }} />
                     </span>
                     <span className={cn("text-right tabular-nums", mo >= 0 ? "text-pos" : "text-neg")}>{f.money(mo, true)}</span>
                   </div>

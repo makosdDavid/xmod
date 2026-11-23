@@ -43,7 +43,7 @@ export function MissionsPanel() {
             const prog = toNum(m.pm) ? ` (${text(m.pn) ? m.pn + " " : ""}${f.num(m.pc) ?? "0"}/${f.num(m.pm)})` : "";
             return (
               <div key={m.id} data-key={"m" + m.id} onClick={() => m.acs && select({ kind: "sector", id: String(m.acs), from: "missions" })}
-                className={cn("cursor-pointer rounded-md border border-border/60 bg-white/[0.015] px-3 py-2 text-[0.8rem] hover:bg-primary/10",
+                className={cn("cursor-pointer rounded-sm border border-input/60 bg-white/[0.024] px-3 py-2 text-[0.8rem] hover:border-primary hover:bg-accent",
                   m.act && "border-gold/50 bg-gold/5", "m" + m.id === cur && "ring-1 ring-primary")}>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                   {m.act && <Badge className="h-4 bg-ok/20 px-1.5 text-[0.65rem] text-ok">{t("missions.active")}</Badge>}
@@ -95,7 +95,7 @@ export function MissionsPanel() {
             <TableBody>
               {offers.map((o) => (
                 <TableRow key={o.id} data-key={"o" + o.id} onClick={() => o.s && select({ kind: "sector", id: String(o.s), from: "offers" })}
-                  className={cn("cursor-pointer border-border/40", "o" + o.id === cur && "bg-primary/15")}>
+                  className={cn("cursor-pointer border-border/40", "o" + o.id === cur && "x4-sel")}>
                   <TableCell className="truncate px-2 py-1" title={o.n || ""}>{o.n || "–"}</TableCell>
                   <TableCell className="hidden truncate px-2 py-1 @[40rem]:table-cell">{o.fa ? factionName(o.fa) : ""}</TableCell>
                   <TableCell className="truncate px-2 py-1 text-right tabular-nums">{f.money(o.rw, true) ?? text(o.rt) ?? ""}</TableCell>

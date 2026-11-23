@@ -26,8 +26,8 @@ export function Bar({ v, kind, width = 64, showText = true, className }: { v: un
   const low = kind === "hull" && p < 35;
   return (
     <span className={cn("inline-flex items-center gap-1.5 align-middle", className)} title={`${Math.round(p)}%`}>
-      <span className="relative inline-block h-1.5 overflow-hidden rounded-full bg-white/10" style={{ width }}>
-        <span className={cn("absolute inset-y-0 left-0 rounded-full transition-[width] duration-300",
+      <span className="relative inline-block h-1.5 overflow-hidden bg-white/10" style={{ width }}>
+        <span className={cn("absolute inset-y-0 left-0 transition-[width] duration-300",
           kind === "shield" ? "bg-shield" : low ? "bg-bad" : "bg-hull")} style={{ width: `${p}%` }} />
       </span>
       {showText && <span className={cn("tabular-nums text-xs", low ? "text-bad" : "text-muted-foreground")}>{Math.round(p)}%</span>}
@@ -47,7 +47,7 @@ export function Empty({ icon: Icon, title, hint, className }: { icon?: React.Com
 
 export function SectionTitle({ children, className, right }: { children: React.ReactNode; className?: string; right?: React.ReactNode }) {
   return (
-    <div className={cn("mt-4 mb-1.5 flex items-center gap-2 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground first:mt-0", className)}>
+    <div className={cn("mt-4 mb-1.5 flex min-h-6 items-center gap-2 bg-sub-head px-2 py-0.5 text-[0.7rem] font-semibold tracking-[0.08em] text-foreground uppercase first:mt-0", className)}>
       <span>{children}</span>
       {right}
     </div>
@@ -55,7 +55,7 @@ export function SectionTitle({ children, className, right }: { children: React.R
 }
 
 export function Hint({ children }: { children: React.ReactNode }) {
-  return <div className="mt-3 rounded-r-md border-l-2 border-primary/60 bg-primary/10 px-3 py-2 text-xs text-foreground/80">{children}</div>;
+  return <div className="mt-3 rounded-r-sm border-l-2 border-primary bg-sub-head/60 px-3 py-2 text-xs text-foreground">{children}</div>;
 }
 
 export function Dot({ color }: { color: string }) {

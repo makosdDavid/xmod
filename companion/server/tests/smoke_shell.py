@@ -25,6 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 from cdp import Browser, find_browser  # noqa: E402
+from style_checks import style_checks  # noqa: E402
 
 PORT, PIPE = int(os.environ.get("X4C_SMOKE_PORT", "8790")), "x4c_smoke"     # override when 8790 is busy
 BASE = f"http://127.0.0.1:{PORT}"
@@ -239,6 +240,9 @@ async def run(dist: Path, replay: bool, suite: str) -> int:
         # the start sector's highways); the hand-over matrix does not depend on where the player is
         if suite in ("all", "core") or replay:
             await run_core(b, minimal=replay)
+        if suite in ("all", "core", "style") or replay:
+            # the game look: computed colours, the bundled font, network, contrast, focus (tests/style_checks.py)
+            await style_checks(b, BASE, check, f"{MAP} && {MAP}.w > 0 && {MAP}.S.player && {MAP}.S.liveGalaxy && {MAP}.S.liveGalaxy.length", dist)
         if suite in ("all", "handover"):
             await handover_matrix(b, not replay)
         return summary()
@@ -576,7 +580,7 @@ async def main() -> int:
     ap.add_argument("--dist", type=Path, default=None)
     ap.add_argument("--replay", type=Path, default=None, help="live snapshot JSON (GET /api/state) to replay instead of the simulator")
     ap.add_argument("--live", action="store_true", help="take the snapshot from the live server http://127.0.0.1:8788/api/state (GET only) and replay it")
-    ap.add_argument("--suite", choices=["all", "core", "handover"], default="all")
+    ap.add_argument("--suite", choices=["all", "core", "handover", "style"], default="all")
     ap.add_argument("--case", default="", help="only hand-over cases whose name contains this")
     ap.add_argument("--replay-live", action="store_true", help="replay: keep re-sending player + scans (a paused game still reports), not frozen")
     a = ap.parse_args()

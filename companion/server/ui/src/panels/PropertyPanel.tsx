@@ -94,7 +94,7 @@ export function PropertyPanel() {
             <Input type="search" value={cfg.q} onChange={(e) => setCfg({ q: e.target.value })} placeholder={t("property.search")} title={t("property.search_tip")} className="h-7 pl-7 text-xs" />
           </div>
           <Toggle size="sm" pressed={!!cfg.tree} onPressedChange={(v) => setCfg({ tree: v })} title={t("property.tree_tip")}
-            className="h-7 shrink-0 gap-1 border border-border/60 px-2 text-xs data-[state=on]:border-primary/60 data-[state=on]:bg-primary/15">
+            className="h-7 shrink-0 gap-1 border border-input px-2 text-xs data-[state=on]:x4-on">
             <Network className="size-3.5" /><span className="hidden @[26rem]:inline">{t("property.tree")}</span>
           </Toggle>
         </div>
@@ -105,7 +105,7 @@ export function PropertyPanel() {
       <FitScroll ref={body} deps={shown.length}>
         {shown.length > 0 ? (
           <Table className="table-fixed text-[0.8rem]">
-            <TableHeader className="sticky top-0 z-[1] bg-panel-head">
+            <TableHeader className="sticky top-0 z-[1]">
               <TableRow className="hover:bg-transparent">
                 {COLS.map((c) => (
                   <TableHead key={c.k} onClick={() => sortBy(c.k)} title={t("property.sort_tip")}
@@ -130,8 +130,8 @@ export function PropertyPanel() {
                 const cell = (k: string) => cn("truncate px-2 py-1", COLS.find((c) => c.k === k)!.at ? "hidden " + COLS.find((c) => c.k === k)!.at : "");
                 return (
                   <TableRow key={id} data-key={id} onClick={() => select({ kind: "obj", id, from: "property" })}
-                    className={cn("cursor-pointer border-border/40", hull !== null && hull < 40 && "text-[#ffb1a8]",
-                      (id === selId || id === cur) && "bg-primary/15 shadow-[inset_2px_0_0_var(--primary)]")}>
+                    className={cn("cursor-pointer border-border/40", hull !== null && hull < 40 && "text-enemy",
+                      (id === selId || id === cur) && "x4-sel")}>
                     <TableCell className="truncate px-2 py-1" style={{ paddingLeft: `${0.5 + d * 0.9}rem` }} title={e.n || ""}>
                       {d > 0 && <span className="mr-1 text-muted-foreground">└</span>}
                       <GameIcon o={e} size={16} className="mr-1.5" />{e.n || "–"}

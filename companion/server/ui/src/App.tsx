@@ -57,9 +57,9 @@ function PopoutApp({ id }: { id: PanelId }) {
   const Icon = PANEL_ICON[id];
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-10 shrink-0 items-center gap-3 border-b bg-gradient-to-b from-[oklch(0.2_0.04_255)] to-[oklch(0.16_0.03_255)] px-3">
-        <span className="rounded bg-gradient-to-br from-[#46b3ff] to-[#1f6fd6] px-1.5 text-[0.8rem] font-extrabold text-white">X4</span>
-        <Icon className="size-4 text-primary" /><span className="text-sm font-semibold">{t("modules." + id)}</span>
+      <header className="flex h-10 shrink-0 items-center gap-3 border-b border-input bg-card px-3">
+        <span className="rounded-sm border border-primary x4-head px-1.5 text-[0.8rem] font-bold">X4</span>
+        <Icon className="size-4 text-primary" /><span className="text-sm font-semibold tracking-[0.08em] uppercase">{t("modules." + id)}</span>
         <StateBadge />
         <div className="flex min-w-0 flex-1 justify-center gap-2"><StaleBanner inline /><AlertBanner inline /></div>
         <LangFontControls />

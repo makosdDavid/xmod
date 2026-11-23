@@ -53,10 +53,10 @@ export function LogPanel() {
                 e.ic && "cursor-pointer hover:bg-primary/10",
                 isNew && "bg-primary/5 shadow-[inset_2px_0_0_var(--primary)]",
                 e.cat === "alerts" && "shadow-[inset_2px_0_0_var(--bad)]", e.cat === "alerts" && isNew && "bg-bad/10 shadow-[inset_3px_0_0_var(--bad)]",
-                k === cur && "bg-primary/15")}>
+                k === cur && "x4-sel")}>
               <div className="flex min-w-0 items-baseline gap-2">
                 <span className="hidden shrink-0 text-[0.65rem] tracking-wider text-muted-foreground uppercase @[24rem]:inline">{t("log.cat_" + e.cat, { defaultValue: e.cat || "" })}</span>
-                <span className={cn("min-w-0 flex-1 truncate font-medium", e.hl && "text-[#ffc2bb]")} title={e.ti || ""}>{e.ti || ""}</span>
+                <span className={cn("min-w-0 flex-1 truncate font-medium", e.hl && "text-bad")} title={e.ti || ""}>{e.ti || ""}</span>
                 <span className="shrink-0 text-[0.7rem] text-muted-foreground" title={f.gameTime(e.t) ?? ""}>{f.ago(e.t, now) ?? ""}</span>
               </div>
               {e.tx && <div className="line-clamp-2 text-foreground/75" title={e.tx}>{e.tx}</div>}

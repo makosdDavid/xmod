@@ -164,7 +164,7 @@ export function NavBar() {
   const onMap = isMapView(view);
   const where = S.player ? whereText(S.player.where) : "";
   return (
-    <nav aria-label={t("nav.label")} className="flex h-11 shrink-0 items-center gap-2 border-b bg-[oklch(0.14_0.025_255/0.92)] px-2">
+    <nav aria-label={t("nav.label")} className="flex h-11 shrink-0 items-center gap-2 border-b border-frame bg-card px-2">
       <div role="tablist" className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto">
         {VIEWS.map((v) => {
           const Icon = VIEW_ICON[v.id];
@@ -173,11 +173,11 @@ export function NavBar() {
             <Tooltip key={v.id}>
               <TooltipTrigger asChild>
                 <button type="button" role="tab" aria-selected={on} onClick={() => setView(v.id as ViewId)}
-                  className={cn("relative inline-flex h-8 items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[0.8rem] whitespace-nowrap text-foreground/75 transition-colors hover:border-border hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                    on && "border-primary/50 bg-primary/20 text-foreground shadow-[0_4px_14px_rgb(20_100_200/0.25)] after:absolute after:inset-x-2 after:-bottom-[0.45rem] after:h-0.5 after:rounded after:bg-primary")}>
+                  className={cn("relative inline-flex h-8 items-center gap-1.5 rounded-sm border border-transparent px-2.5 text-[0.78rem] font-semibold tracking-[0.05em] whitespace-nowrap text-muted-foreground uppercase transition-colors hover:border-input hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                    on && "x4-on hover:border-primary hover:bg-panel-head")}>
                   <Icon className="size-4" />
                   <span className={cn("hidden xl:inline", on && "inline")}>{t("views." + v.id)}</span>
-                  <Kbd className="hidden h-4 px-1 text-[0.6rem] 2xl:inline-flex">{v.key}</Kbd>
+                  <Kbd className="hidden h-4 px-1 text-[0.6rem] min-[1800px]:inline-flex">{v.key}</Kbd>
                   {v.id === "log" && logN > 0 && (
                     <Badge variant={alerts ? "destructive" : "default"} className={cn("h-4 min-w-4 px-1 text-[0.6rem] tabular-nums", alerts > 0 && "animate-pulse")}>{logN >= 99 ? "99+" : logN}</Badge>
                   )}
@@ -188,11 +188,11 @@ export function NavBar() {
           );
         })}
         {view === "hotkeys" && (
-          <span className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-md border border-primary/50 bg-primary/20 px-2.5 text-[0.8rem]">{t("views.hotkeys")}</span>
+          <span className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm border px-2.5 text-[0.8rem] font-semibold tracking-[0.06em] uppercase x4-on">{t("views.hotkeys")}</span>
         )}
       </div>
       {!onMap && (
-        <Button variant="secondary" size="sm" onClick={() => setView("map")} title={t("nav.back_to_map_tip")} className="h-8 shrink-0 gap-1.5 border border-primary/50 bg-primary/15 text-xs">
+        <Button variant="default" size="sm" onClick={() => setView("map")} title={t("nav.back_to_map_tip")} className="h-8 shrink-0 gap-1.5 text-xs">
           <ArrowLeft className="size-4" />{t("nav.back_to_map")}<Kbd className="h-4 px-1 text-[0.6rem]">Esc</Kbd>
         </Button>
       )}

@@ -73,13 +73,13 @@ export function ObjectsPanel() {
             <div key={o.id} data-key={String(o.id)} onClick={() => select({ kind: "obj", id: String(o.id), from: "objects", obj: o, sid })}
               className={cn("grid cursor-pointer grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-border/40 px-2.5 py-1 text-[0.8rem] hover:bg-primary/10",
                 "@[22rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_auto] @[30rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto] @[38rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto_6.5rem]",
-                (String(o.id) === selId || String(o.id) === cur) && "bg-primary/15 shadow-[inset_2px_0_0_var(--primary)]")}>
+                (String(o.id) === selId || String(o.id) === cur) && "x4-sel")}>
               <span className="flex justify-center"><GameIcon o={o} size={18} /></span>
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="truncate font-medium" style={{ color: objColorCss(o) }} title={name}>{name}</span>
                 {abandoned && (
                   <span data-badge="ownerless" title={t("objects.ownerless_tip")} style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}
-                    className="shrink-0 rounded-full border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold uppercase">{t("objects.ownerless_badge")}</span>
+                    className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold uppercase">{t("objects.ownerless_badge")}</span>
                 )}
               </span>
               <span className="hidden truncate text-xs text-muted-foreground @[22rem]:block">{cls}</span>

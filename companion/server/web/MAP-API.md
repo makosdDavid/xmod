@@ -179,3 +179,18 @@ The map itself treats width-without-height as "not laid out" and draws as soon a
 CSS classes used (cosmetic, all optional): `mapbody mapcanvas dragging mapinfo mi-title layerbox layers
 layers-btn chip on maplegend2 lgtitle lgrid lgi swatch radar zoombox zbtn followbadge backbtn maptip
 segs seg x4map-body x4map-tools muted dot`.
+
+## Look (optional, additive)
+
+A host can adapt the parts the map draws on its canvas to its own look with CSS custom properties on
+the container or an ancestor (read once, when the map is built; without them the defaults apply):
+
+| Property | Default | |
+|---|---|---|
+| `--x4map-font` | `"Segoe UI", "Inter", system-ui, sans-serif` | font stack of the canvas labels; a web font is awaited (`document.fonts.load`) and the map redraws when it arrives |
+| `--x4map-mini-fill` | `rgba(6,12,24,0.86)` | mini galaxy frame fill |
+| `--x4map-mini-stroke` | `rgba(120,170,230,0.25)` | mini galaxy frame outline |
+| `--x4map-mini-radius` | `8` | mini galaxy frame corner radius (px) |
+
+They change only this chrome; the map's content colours (holomap colours, icons, owners, guidance,
+resources, highways) are never taken from CSS.

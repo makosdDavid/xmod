@@ -55,15 +55,15 @@ export const FitScroll = React.forwardRef<HTMLDivElement, { children: React.Reac
         </div>
         {above > 0 && (
           <button type="button" onClick={() => page(-1)}
-            className="absolute top-1 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-primary/40 bg-popover/95 px-2.5 py-0.5 text-[0.7rem] font-medium text-foreground/90 shadow-md hover:bg-accent">
+            className="absolute top-1 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1 rounded-sm border border-input bg-popover px-2.5 py-0.5 text-[0.7rem] font-semibold tracking-[0.06em] text-foreground uppercase hover:border-primary hover:bg-accent">
             <ChevronUp className="size-3" />{t("fit.above", { n: above })}
           </button>
         )}
         {below > 0 && (
           <>
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-card to-transparent" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-input" />
             <button type="button" onClick={() => page(1)}
-              className="absolute bottom-1.5 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1 rounded-full border border-primary/40 bg-popover/95 px-2.5 py-0.5 text-[0.7rem] font-medium text-foreground/90 shadow-md hover:bg-accent">
+              className="absolute bottom-1.5 left-1/2 z-10 inline-flex -translate-x-1/2 items-center gap-1 rounded-sm border border-input bg-popover px-2.5 py-0.5 text-[0.7rem] font-semibold tracking-[0.06em] text-foreground uppercase hover:border-primary hover:bg-accent">
               <ChevronDown className="size-3" />{t("fit.more", { n: below })}
             </button>
           </>
