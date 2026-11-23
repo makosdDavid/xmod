@@ -229,7 +229,7 @@ public static class TestJob {
     $before = LogCount 'watcher start (loop)'
     Check 'conhost --headless launch runs the watcher' (Wait-Until { (LogCount 'watcher start (loop)') -gt $before } 30)
     $wp = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$watcher*" })
-    $wp | ForEach-Object { [void]$tracked.Add([int]$_.ProcessId) }
+    $wp | Where-Object { $_.CommandLine -like "*$mutexName*" } | ForEach-Object { [void]$tracked.Add([int]$_.ProcessId) }   # only OUR watchers: never stop the user's real watcher (same script path)
     $foreign = @($wp | Where-Object { $_.CommandLine -notlike "*$mutexName*" })
     $ids = @($wp | ForEach-Object { [int]$_.ProcessId }) + [int]$r.ProcessId
     Check 'headless watcher (+ its conhost) has no visible window' (-not (Get-Process -Id $ids -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }))

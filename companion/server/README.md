@@ -118,6 +118,9 @@ it comes back at the next game start. Everything is started detached, so it keep
   `serverStartTimeoutSec` (60), `browserArgs`/`serverCommand` (testing).
 - **Log:** `logs\watcher.log` (rotated at 1 MB). Check without changing anything:
   `powershell -ExecutionPolicy Bypass -File watch_x4.ps1 -Once -DryRun`.
+- **Open now:** `watch_x4.ps1 -OpenNow` acts once as if the game had just started (server if needed, window if
+  none), whether the game runs or not and ignoring `skipWindowFlag`; it takes no single-instance mutex. Used by the
+  launch manager [`../x4switch`](../x4switch) for its "Open dashboard window" button; the watcher works without it.
 - **Tests:** `powershell -ExecutionPolicy Bypass -File tests\test_watcher.ps1` (fake game, port 8796, stub server
   and browser under `D:\X4-backups\work\watcher-test\`; does not touch the real game, server or window).
 

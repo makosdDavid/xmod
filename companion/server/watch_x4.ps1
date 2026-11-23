@@ -28,7 +28,10 @@ param(
     [string]$StateDir = '',         # default: <script dir>\state
     [string]$LogDir = '',           # default: <script dir>\logs
     [string]$MutexName = 'Local\X4CompanionWatcher',
-    [double]$PollSeconds = 3
+    [double]$PollSeconds = 3,
+    [switch]$OpenNow                # act once as if the game had just started (server if needed + window if none),
+                                    # whether or not the game runs and ignoring skipWindowFlag; takes no mutex
+                                    # (an explicit "open the dashboard" request, e.g. from the x4switch manager)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,7 +73,7 @@ $uvCacheDir   = [string](Get-Cfg 'uvCacheDir' $env:UV_CACHE_DIR)
 # ---- single instance ----
 # A named mutex lives as long as some process holds a handle to it, so it also disappears if a watcher is killed.
 # -DryRun changes nothing, so it neither takes nor checks the mutex (it may run next to a real watcher).
-if (-not $DryRun) {
+if (-not $DryRun -and -not $OpenNow) {
     $createdNew = $false
     $mutex = New-Object Threading.Mutex($false, $MutexName, [ref]$createdNew)
     if (-not $createdNew) { Write-Log 'another watcher is already running - exiting'; exit 0 }
@@ -208,7 +211,7 @@ function Invoke-GameStarted {
     # Optional: another tool (e.g. a cockpit mode that uses every monitor) can ask us not to open the window
     # by creating the file named in the 'skipWindowFlag' setting. The server is still started.
     $skip = [string](Get-Cfg 'skipWindowFlag' '')
-    if ($skip -and (Test-Path -LiteralPath $skip)) { Write-Log "game running, $srv, skip flag $skip present - not opening the window"; return }
+    if (-not $OpenNow -and $skip -and (Test-Path -LiteralPath $skip)) { Write-Log "game running, $srv, skip flag $skip present - not opening the window"; return }
     $win = Find-CompanionWindow
     if ($win) { $wtxt = "window present ($win)" }
     elseif ($DryRun) { $wtxt = 'DRY-RUN: would open window: ' + (Get-BrowserCommandLine) }
@@ -224,8 +227,14 @@ function Invoke-GameStarted {
 }
 
 # ---- main loop ----
-$mode = @(); if ($Once) { $mode += 'once' }; if ($DryRun) { $mode += 'dry-run' }
+$mode = @(); if ($Once) { $mode += 'once' }; if ($DryRun) { $mode += 'dry-run' }; if ($OpenNow) { $mode += 'open-now' }
 Write-Log ("watcher start ({0}) game={1} port={2} poll={3}s" -f ($(if ($mode) { $mode -join ',' } else { 'loop' })), $GameExe, $Port, $PollSeconds)
+if ($OpenNow) {
+    $Once = $true   # log lines also to the console
+    Write-Log 'open-now requested'
+    try { Invoke-GameStarted } catch { Write-Log "error: $($_.Exception.Message)"; exit 1 }
+    exit 0
+}
 $wasRunning = $false
 while ($true) {
     try {
