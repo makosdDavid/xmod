@@ -173,8 +173,8 @@ export function NavBar() {
             <Tooltip key={v.id}>
               <TooltipTrigger asChild>
                 <button type="button" role="tab" aria-selected={on} onClick={() => setView(v.id as ViewId)}
-                  className={cn("relative inline-flex h-8 items-center gap-1.5 rounded-sm border border-transparent px-2.5 text-[0.78rem] font-semibold tracking-[0.05em] whitespace-nowrap text-muted-foreground uppercase transition-colors hover:border-input hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-                    on && "x4-on hover:border-primary hover:bg-panel-head")}>
+                  className={cn("relative inline-flex h-8 items-center gap-1.5 rounded-sm border border-input bg-sub-head px-2.5 text-[0.8rem] font-semibold whitespace-nowrap text-foreground transition-colors hover:bg-(--x4-button-hover) focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                    on && "x4-on")}>
                   <Icon className="size-4" />
                   <span className={cn("hidden xl:inline", on && "inline")}>{t("views." + v.id)}</span>
                   <Kbd className="hidden h-4 px-1 text-[0.6rem] min-[1800px]:inline-flex">{v.key}</Kbd>
@@ -188,7 +188,7 @@ export function NavBar() {
           );
         })}
         {view === "hotkeys" && (
-          <span className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm border px-2.5 text-[0.8rem] font-semibold tracking-[0.06em] uppercase x4-on">{t("views.hotkeys")}</span>
+          <span className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-sm border px-2.5 text-[0.8rem] font-semibold x4-on">{t("views.hotkeys")}</span>
         )}
       </div>
       {!onMap && (

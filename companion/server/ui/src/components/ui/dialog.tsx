@@ -125,7 +125,7 @@ function DialogTitle({
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("-mx-6 -mt-6 mb-1 x4-head py-2.5 pr-12 pl-6 text-sm leading-none", className)}
+      className={cn("-mx-6 -mt-6 mb-1 x4-head py-2.5 px-12 text-center text-(length:--x4-fs-title) leading-tight", className)}
       {...props}
     />
   )

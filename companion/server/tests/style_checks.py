@@ -23,6 +23,12 @@ GAME = {
     "dropdown_background_options": (0, 0, 0, 1.0),         # black -> menus / popovers
     "text_normal": (255, 255, 255, 1.0),                   # white
     "azure_bright": (77, 181, 255, 1.0),                   # highlight
+    "container_panel_header": (0, 0, 0, 1.0),              # black -> panel / tab titles (helper.lua:590-597)
+    "container_subsection_header": (0, 105, 179, 26 / 255),  # azure_dark_alpha_26 -> section headers (helper.lua:614-621)
+    "table_row_highlight": (77, 181, 255, 1.0),            # azure_bright -> the selected row's outline
+    "button_background_default": (0, 60, 102, 1.0),       # azure_very_dark -> buttons
+    "editbox_background_default": (0, 60, 102, 224 / 255),  # azure_very_dark_alpha_224
+    "editbox_border": (0, 149, 255, 1.0),                  # azure
 }
 
 # JS helpers in the page: colour parsing, compositing over black, WCAG contrast, effective background
@@ -141,21 +147,39 @@ async def style_checks(b, base: str, check, map_ready: str, dist) -> None:
     check(near(st["panelBg"], GAME["frame_background_semitransparent"]) and near(st["frame"], GAME["frameborder_default"]) and st["frameW"] == "1px"
           and float(st["radius"].rstrip("px") or 0) <= 2.01,
           f"panel = frame_background_semitransparent {st['panelBg']}, 1px frameborder_default {st['frame']}, square corners {st['radius']}")
-    check(near(st["headBg"], GAME["row_title"]) and near(st["headFg"], GAME["text_normal"]) and st["upper"] == "uppercase",
-          f"panel header bar = row_title {st['headBg']}, white uppercase text, tracking {st['tracking']} ({st['headFg']}, {st['upper']})")
-    nav = await p.eval("""(() => { const t = document.querySelector('nav [role=tab][aria-selected=true]'), cs = getComputedStyle(t);
-        return [__st.parse(cs.backgroundColor), __st.parse(cs.borderTopColor), cs.boxShadow !== 'none', cs.textTransform]; })()""")
-    check(near(nav[0], GAME["row_title"]) and near(nav[1], GAME["azure_bright"]) and nav[2],
-          f"active navigation tab = on-state: row_title fill, azure_bright border, glow ({nav})")
+    hb = await p.eval("""(() => { const h = document.querySelector('section[data-panel=objects] header'), cs = getComputedStyle(h), t = h.querySelector('h2'), ts = getComputedStyle(t), bs = getComputedStyle(document.body);
+        return { bg: __st.parse(cs.backgroundColor), line: [cs.borderBottomWidth, __st.parse(cs.borderBottomColor)], weight: ts.fontWeight, align: ts.textAlign,
+                 ratio: Math.round(parseFloat(ts.fontSize) / parseFloat(bs.fontSize) * 100) / 100 }; })()""")
+    check(near(hb["bg"], GAME["container_panel_header"]) and hb["line"][0] == "3px" and near(hb["line"][1], GAME["row_title"]) and hb["weight"] == "700"
+          and hb["align"] == "center" and abs(hb["ratio"] - 12 / 9) < 0.02,
+          f"panel title = bold, centred, on black with a 3px row_title line, size 12:9 of the text ({hb})")
+    # the game never upper-cases and has no letter-spacing (helper.lua:3204-3216; no upper() on display text)
+    up = await p.eval("""(() => { const out = []; for (const e of document.querySelectorAll('body *')) { const cs = getComputedStyle(e);
+          if (!e.offsetParent && cs.position !== 'fixed') continue;
+          if (cs.textTransform === 'uppercase' || (cs.letterSpacing !== 'normal' && parseFloat(cs.letterSpacing) > 0.2)) out.push(e.tagName + '.' + String(e.className).slice(0, 40)); }
+        return out; })()""")
+    check(not up, f"no upper-casing / letter-spacing anywhere in the UI ({up[:5]})")
+    nav = await p.eval("""(() => { const on = getComputedStyle(document.querySelector('nav [role=tab][aria-selected=true]')), off = getComputedStyle(document.querySelector('nav [role=tab][aria-selected=false]'));
+        return [__st.parse(on.backgroundColor), __st.parse(off.backgroundColor), on.textTransform, on.letterSpacing]; })()""")
+    check(near(nav[0], GAME["row_background_selected"]) and near(nav[1], GAME["row_title_background"]),
+          f"navigation tabs = row_title_background, the chosen one row_background_selected ({nav})")
+    btn = await p.eval("""(() => { const b = [...document.querySelectorAll('nav button')].find((e) => e.textContent.includes('Modules')), cs = getComputedStyle(b);
+        return [__st.parse(cs.backgroundColor), cs.borderTopWidth, __st.parse(cs.borderTopColor)]; })()""")
+    check(near(btn[0], GAME["button_background_default"]) and btn[1] == "1px" and near(btn[2], GAME["row_title"]),
+          f"button = button_background_default #003c66 with a 1px button_border_default line ({btn})")
+    ed = await p.eval("""(() => { const e = document.querySelector('section[data-panel=objects] input'); if (!e) return null; const cs = getComputedStyle(e);
+        return [__st.parse(cs.backgroundColor), __st.parse(cs.borderTopColor)]; })()""")
+    check(ed and near(ed[0], GAME["editbox_background_default"]) and near(ed[1], GAME["editbox_border"]),
+          f"edit box = editbox_background_default with the azure editbox_border ({ed})")
 
     # selected row: click the first object of the Objects list
     clicked = await p.click_el("document.querySelector('section[data-panel=objects] [data-key]')")
     await asyncio.sleep(0.6)
     sel = await p.eval("""(() => { const r = document.querySelector('section[data-panel=objects] .x4-sel'); if (!r) return null;
-        const cs = getComputedStyle(r); return [__st.parse(cs.backgroundColor), cs.boxShadow !== 'none', __st.textContrast(r),
+        const cs = getComputedStyle(r); return [__st.parse(cs.backgroundColor), cs.outlineStyle, cs.outlineWidth, __st.parse(cs.outlineColor),
         Math.min(...[...r.querySelectorAll('span,div')].filter((e) => e.textContent.trim() && !e.children.length).map((e) => __st.textContrast(e)))]; })()""")
-    check(clicked and sel and near(sel[0], GAME["row_background_selected"]) and sel[1] and sel[2] >= 4.5 and sel[3] >= 4.5,
-          f"selected list row = row_background_selected with glow, its text >= 4.5:1 ({sel})")
+    check(clicked and sel and sel[1] == "solid" and sel[2] == "1px" and near(sel[3], GAME["table_row_highlight"]) and (not sel[0] or sel[0][3] < 0.2) and sel[4] >= 4.5,
+          f"selected list row = 1px table_row_highlight outline, no fill, its text >= 4.5:1 ({sel})")
 
     # a menu (Modules): black, dropdown border, label = sub-header, focused item = selected look
     await p.click_el(f"[...document.querySelectorAll('nav button')].find((e) => e.textContent.includes('Modules'))")
@@ -163,8 +187,8 @@ async def style_checks(b, base: str, check, map_ready: str, dist) -> None:
     menu = await p.eval("""(() => { const m = document.querySelector('[data-slot=dropdown-menu-content]'); if (!m) return null;
         const cs = getComputedStyle(m), l = m.querySelector('[data-slot=dropdown-menu-label]');
         return [__st.parse(cs.backgroundColor), __st.parse(cs.borderTopColor), cs.borderTopLeftRadius, l ? __st.parse(getComputedStyle(l).backgroundColor) : null]; })()""")
-    check(menu and near(menu[0], GAME["dropdown_background_options"]) and near(menu[1], GAME["dropdown_border_default"]) and near(menu[3], GAME["row_title_background"]),
-          f"menu = black with the game's dropdown border, its label a row_title_background sub-header ({menu})")
+    check(menu and near(menu[0], GAME["dropdown_background_options"]) and near(menu[1], GAME["dropdown_border_default"]) and near(menu[3], GAME["container_subsection_header"]),
+          f"menu = black with the game's dropdown border, its label a centred container_subsection_header section row ({menu})")
     await p.key("Escape")
     await asyncio.sleep(0.3)
 
@@ -291,6 +315,8 @@ async def color_checks(b, base: str, check, map_ready: str) -> None:
         const rows = [...document.querySelectorAll('section[data-panel=log] [data-key]')];
         out.logNormal = rows.filter((r) => !r.hasAttribute('data-log-hl')).slice(0, 3).map((r) => __st.parse(getComputedStyle(r).color).slice(0, 3).join(','));
         out.logSep = rows.slice(0, 3).map((r) => { const cs = getComputedStyle(r); return [cs.borderBottomWidth, __st.parse(cs.borderBottomColor)]; });
+        out.logIndent = rows.map((r) => r.querySelector('.line-clamp-2')).filter(Boolean).slice(0, 3).map((e) => getComputedStyle(e).paddingLeft);
+        out.missionRows = [...document.querySelectorAll('section[data-panel=missions] [data-key^=m], section[data-panel=missions] [data-mission-row]')].slice(0, 4).map((e) => __st.parse(getComputedStyle(e).backgroundColor));
         return out; })()""")
     s = lambda t: ",".join(str(v) for v in t)
     allm = lambda arr, want: bool(arr) and all(x == s(want) for x in arr)
@@ -303,7 +329,10 @@ async def color_checks(b, base: str, check, map_ready: str) -> None:
           (not res["enemy"] or allm(res["enemy"], TEXT["text_enemy"])) and allm(res["normal"], TEXT["text_normal"]),
           f"Factions: hostile text_hostile #ff0000, enemy text_enemy #ff9999, others text_normal ({res['hostile'][:2]}, {res['enemy'][:2]}, {res['normal'][:2]})")
     sep_ok = res["logSep"] and all(w == "1px" and near(c2, GAME["row_title"]) for w, c2 in res["logSep"])
+    check(res["missionRows"] and all(near(c3, GAME["row_title_background"]) for c3 in res["missionRows"]),
+          f"Missions: mission rows on row_background_blue (menu_map.lua:18412) ({res['missionRows'][:2]})")
+    sep_ok = sep_ok and all(x == "16px" for x in res["logIndent"])
     no_log = not res["logSep"]
     check(no_log or (allm(res["logNormal"], TEXT["text_normal"]) and (not res["logHl"] or allm(res["logHl"], TEXT["text_logbook_highlight"])) and sep_ok),
-          f"Logbook: text_normal, highlighted entries text_logbook_highlight, entries separated by a 1px row_title line ({'N/A: no entries in this data' if no_log else (res['logNormal'][:1], res['logHl'][:1], res['logSep'][:1])})")
+          f"Logbook: text_normal, highlighted entries text_logbook_highlight, entries separated by a 1px row_title line, text indented ({'N/A: no entries in this data' if no_log else (res['logNormal'][:1], res['logHl'][:1], res['logSep'][:1])})")
     await b.close_page(p)

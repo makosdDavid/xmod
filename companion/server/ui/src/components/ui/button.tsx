@@ -4,21 +4,23 @@ import { cn } from "@/lib/utils"
 import { Slot } from "radix-ui"
 
 const buttonVariants = cva(
-  // the game's flat buttons: 1px border, square corners, no gradient; pressed / open = the on-state
-  // (azure header fill + azure border + glow, index.css x4-on)
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-sm border border-transparent text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 aria-pressed:x4-on data-[state=open]:x4-on [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  // the game's buttons (helper.lua:3227-3229, widget_fullscreen.lua:15570-15660): button_background_default
+  // #003c66 with a 1 px button_border_default line (config.button.border = 1, :580/:8708); mouse-over = the
+  // highlight colour (see --x4-button-hover), pressed = button_background_inactive #202020; inactive =
+  // #202020 / border #303030 / text #808080. Pressed toggle / open menu = row_background_selected (x4-on).
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-sm border border-transparent text-sm font-medium whitespace-nowrap transition-colors outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:border-(--x4-button-inactive-border) disabled:bg-(--x4-button-inactive) disabled:text-(--x4-text-off) aria-invalid:border-destructive aria-invalid:ring-destructive/20 aria-pressed:x4-on data-[state=open]:x4-on [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "border-primary/70 bg-panel-head text-foreground hover:border-primary hover:x4-glow",
+        default: "border-input bg-(--x4-button-bg) text-foreground hover:bg-(--x4-button-hover) active:bg-(--x4-button-pressed)",
         destructive:
-          "border-destructive/70 bg-(--x4-danger-bg) text-white hover:border-destructive focus-visible:ring-destructive/40",
+          "border-destructive/70 bg-(--x4-danger-bg) text-white hover:border-destructive active:bg-(--x4-button-pressed) focus-visible:ring-destructive/40",
         outline:
-          "border-input bg-card text-foreground hover:border-primary hover:bg-accent hover:text-accent-foreground",
+          "border-input bg-(--x4-button-bg) text-foreground hover:bg-(--x4-button-hover) active:bg-(--x4-button-pressed)",
         secondary:
-          "border-input bg-secondary text-secondary-foreground hover:border-primary",
+          "border-input bg-(--x4-button-bg) text-foreground hover:bg-(--x4-button-hover) active:bg-(--x4-button-pressed)",
         ghost:
-          "hover:bg-accent hover:text-accent-foreground",
+          "hover:bg-(--x4-button-hover) hover:text-foreground active:bg-(--x4-button-pressed) disabled:border-transparent disabled:bg-transparent",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

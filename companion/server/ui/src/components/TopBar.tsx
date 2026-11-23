@@ -26,7 +26,7 @@ const STATE_TONE: Record<string, string> = {
 function Group({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <div className={cn("flex min-w-0 items-center gap-2 overflow-hidden", className)}>
-      <span className="hidden shrink-0 text-[0.65rem] font-semibold tracking-[0.08em] text-muted-foreground uppercase lg:inline">{label}</span>
+      <span className="hidden shrink-0 text-xs text-muted-foreground lg:inline">{label}</span>
       {children}
     </div>
   );
@@ -40,7 +40,7 @@ export function StateBadge() {
   const age = toNum(S.status && S.status.last_rx_age);
   return (
     <span className="flex shrink-0 items-center gap-1.5">
-      <Badge variant="outline" className={cn("h-5 rounded-sm px-2 text-[0.7rem] font-semibold tracking-[0.08em] uppercase", STATE_TONE[st] || "border-bad/70 bg-bad/10 text-bad")}
+      <Badge variant="outline" className={cn("h-5 rounded-sm px-2 text-[0.7rem] font-semibold", STATE_TONE[st] || "border-bad/70 bg-bad/10 text-bad")}
         title={t("state.tip", { state: t("state." + st) })}>
         <span className={cn("mr-1 inline-block size-1.5 rounded-full bg-current", st === "live" && "animate-pulse")} />
         {t("state." + st)}
@@ -134,8 +134,8 @@ export function TopBar() {
   const targetText = tg ? joinParts([text(tg.name) ?? "?", f.dist(tg.dist), f.pct(tg.hull)]) : null;
   return (
     <header className="flex h-12 shrink-0 items-center gap-4 overflow-hidden border-b border-input bg-card px-3 whitespace-nowrap">
-      <div className="flex shrink-0 items-center gap-2 font-semibold tracking-[0.08em] uppercase">
-        <span className="rounded-sm border border-primary x4-head px-1.5 text-[0.8rem] font-bold">X4</span>
+      <div className="flex shrink-0 items-center gap-2 font-bold">
+        <span className="rounded-sm border border-input bg-(--x4-button-bg) px-1.5 text-[0.8rem] font-bold">X4</span>
         <span className="hidden 2xl:inline">Companion</span>
       </div>
       <StateBadge />

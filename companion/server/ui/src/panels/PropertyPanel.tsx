@@ -71,6 +71,8 @@ export function PropertyPanel() {
   const ids = list.map((e) => String(e.id));
   useEffect(() => { setPropertyOrder(ids); });
   const shown = list.slice(0, CAP);
+  // squad leaders (an own ship others are assigned to) get row_background_blue, as the game list (menu_map.lua:7326)
+  const leaders = new Set<string>(); for (const x of S.property.values()) if (x.cmd) leaders.add(String(x.cmd));
   const cur = useListNav("property", shown.map((e) => String(e.id)), (k) => select({ kind: "obj", id: k, from: "property" }), body);
   const selId = S.selected && S.selected.kind === "obj" ? S.selected.id : null;
   useEffect(() => {
@@ -109,7 +111,7 @@ export function PropertyPanel() {
               <TableRow className="hover:bg-transparent">
                 {COLS.map((c) => (
                   <TableHead key={c.k} onClick={() => sortBy(c.k)} title={t("property.sort_tip")}
-                    className={cn("h-7 cursor-pointer px-2 text-[0.68rem] font-semibold tracking-wider whitespace-nowrap text-muted-foreground uppercase select-none",
+                    className={cn("h-7 cursor-pointer px-2 text-[0.68rem] font-semibold whitespace-nowrap text-muted-foreground select-none",
                       c.at ? "hidden " + c.at : "", c.w, cfg.sort === c.k && "text-primary")}>
                     <span className="inline-flex max-w-full items-center gap-0.5 truncate">
                       {t("property.c_" + c.k)}
@@ -130,7 +132,7 @@ export function PropertyPanel() {
                 const cell = (k: string) => cn("truncate px-2 py-1", COLS.find((c) => c.k === k)!.at ? "hidden " + COLS.find((c) => c.k === k)!.at : "");
                 return (
                   <TableRow key={id} data-key={id} onClick={() => select({ kind: "obj", id, from: "property" })}
-                    className={cn("cursor-pointer border-border/40", hull !== null && hull < 40 && "text-warn",
+                    className={cn("cursor-pointer", leaders.has(id) && "bg-sub-head", hull !== null && hull < 40 && "text-warn",
                       (id === selId || id === cur) && "x4-sel")}>
                     <TableCell className="truncate px-2 py-1" style={{ paddingLeft: `${0.5 + d * 0.9}rem` }} title={e.n || ""}>
                       {d > 0 && <span className="mr-1 text-muted-foreground">└</span>}

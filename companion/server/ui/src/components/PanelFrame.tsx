@@ -66,7 +66,7 @@ function DropZones({ id }: { id: PanelId }) {
       <div className="absolute inset-0 rounded-sm bg-background/30 ring-1 ring-input ring-inset" />
       {hover && (
         <div className={cn("pointer-events-none absolute flex items-center justify-center rounded-sm border-2 border-primary bg-primary/15 text-sm x4-glow transition-all", preview[hover])}>
-          <span className="rounded-sm border border-primary x4-head px-2 py-0.5">{t("panel.drop_" + hover)}</span>
+          <span className="rounded-sm border border-input bg-selected px-2 py-0.5 font-bold text-foreground">{t("panel.drop_" + hover)}</span>
         </div>
       )}
     </div>
@@ -100,7 +100,7 @@ export function PanelFrame({ id, mode, collapsed = false, parentDir = null, titl
       <section data-panel={id} className="relative flex h-full flex-col items-center gap-2 overflow-hidden rounded-sm border border-frame bg-card py-2">
         <IconBtn tip={t("panel.expand")} onClick={() => toggleCollapse(id)}><ChevronRight /></IconBtn>
         <Icon className="size-4 text-primary" />
-        <span className="text-xs font-semibold tracking-[0.08em] text-muted-foreground uppercase [writing-mode:vertical-rl]">{title}</span>
+        <span className="text-xs font-bold text-foreground [writing-mode:vertical-rl]">{title}</span>
         {showDrop && <DropZones id={id} />}
       </section>
     );
@@ -115,7 +115,7 @@ export function PanelFrame({ id, mode, collapsed = false, parentDir = null, titl
         onDragStart={(e) => { e.dataTransfer.setData(DND, id); e.dataTransfer.effectAllowed = "move"; setDragging(id); }}
         onDragEnd={() => setDragging(null)}
         onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest("button,input,select,a") && (dock || mode === "max")) toggleMax(id); }}
-        className={cn("flex h-10 shrink-0 items-center gap-2 border-b border-input x4-head pr-1.5 pl-2 select-none",
+        className={cn("flex h-10 shrink-0 items-center gap-2 x4-head pr-1.5 pl-2 select-none",
           dock && "cursor-grab active:cursor-grabbing", collapsed && "border-b-0")}>
         {dock && (
           <Tooltip>
@@ -124,9 +124,9 @@ export function PanelFrame({ id, mode, collapsed = false, parentDir = null, titl
           </Tooltip>
         )}
         <Icon className="size-4 shrink-0 text-foreground" aria-hidden />
-        {titleRef ? <span ref={titleRef} className="min-w-0 truncate text-[0.8rem] font-semibold" />
-                  : <h2 className="min-w-0 truncate text-[0.8rem] font-semibold">{title}</h2>}
-        <span ref={toolsRef} className="panel-tools ml-auto flex min-w-0 items-center gap-1.5 overflow-hidden" />
+        {titleRef ? <span ref={titleRef} className="min-w-0 truncate text-(length:--x4-fs-title) font-bold" />
+                  : <h2 className="min-w-0 flex-1 truncate text-center text-(length:--x4-fs-title) font-bold">{title}</h2>}
+        {toolsRef && <span ref={toolsRef} className="panel-tools ml-auto flex min-w-0 items-center gap-1.5 overflow-hidden" />}
         <span className={cn("flex shrink-0 items-center", !toolsRef && "ml-auto")}>
           {canCollapse && (
             <IconBtn tip={collapsed ? t("panel.expand") : t("panel.collapse")} onClick={() => toggleCollapse(id)}>

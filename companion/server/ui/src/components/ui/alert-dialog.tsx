@@ -105,7 +105,7 @@ function AlertDialogTitle({
     <AlertDialogPrimitive.Title
       data-slot="alert-dialog-title"
       className={cn(
-        "-mx-6 -mt-6 mb-1 self-stretch justify-self-stretch x4-head px-6 py-2.5 text-left text-sm leading-none sm:group-data-[size=default]/alert-dialog-content:group-has-data-[slot=alert-dialog-media]/alert-dialog-content:col-start-2",
+        "-mx-6 -mt-6 mb-1 self-stretch justify-self-stretch x4-head px-6 py-2.5 text-center text-(length:--x4-fs-title) leading-tight sm:group-data-[size=default]/alert-dialog-content:group-has-data-[slot=alert-dialog-media]/alert-dialog-content:col-start-2",
         className
       )}
       {...props}

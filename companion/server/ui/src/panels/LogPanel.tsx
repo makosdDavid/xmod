@@ -59,12 +59,12 @@ export function LogPanel() {
                 isNew && "shadow-[inset_3px_0_0_var(--x4-azure-bright)]",
                 k === cur && "x4-sel")}>
               <div className="flex min-w-0 items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate font-semibold" title={e.ti || ""}>{e.ti || ""}</span>
+                <span className="min-w-0 flex-1 truncate font-bold" title={e.ti || ""}>{e.ti || ""}</span>
                 <span className="shrink-0 text-[0.7rem] text-muted-foreground" title={f.gameTime(e.t) ?? ""}>{f.ago(e.t, now) ?? ""}</span>
               </div>
-              {e.tx && <div className="line-clamp-2" title={e.tx}>{e.tx}</div>}
-              <div className="flex min-w-0 items-baseline gap-2 text-xs text-muted-foreground">
-                <span className="hidden shrink-0 text-[0.65rem] tracking-wider uppercase @[24rem]:inline">{t("log.cat_" + e.cat, { defaultValue: e.cat || "" })}</span>
+              {e.tx && <div className="line-clamp-2 pl-4" title={e.tx}>{e.tx}</div>}
+              <div className="flex min-w-0 items-baseline gap-2 pl-4 text-xs text-muted-foreground">
+                <span className="hidden shrink-0 text-[0.65rem] @[24rem]:inline">{t("log.cat_" + e.cat, { defaultValue: e.cat || "" })}</span>
                 <span className="min-w-0 flex-1 truncate">{meta}</span>
                 {mo ? <span className={cn("shrink-0 tabular-nums", mo >= 0 ? "text-pos" : "text-neg")}>{(mo > 0 ? "+" : "") + (f.money(mo) ?? "")}</span> : null}
               </div>

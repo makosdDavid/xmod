@@ -43,8 +43,8 @@ export function MissionsPanel() {
             const prog = toNum(m.pm) ? ` (${text(m.pn) ? m.pn + " " : ""}${f.num(m.pc) ?? "0"}/${f.num(m.pm)})` : "";
             return (
               <div key={m.id} data-key={"m" + m.id} onClick={() => m.acs && select({ kind: "sector", id: String(m.acs), from: "missions" })}
-                className={cn("cursor-pointer rounded-sm border border-input/60 bg-white/[0.024] px-3 py-2 text-[0.8rem] hover:border-primary hover:bg-accent",
-                  m.act && "border-mission/60 bg-mission/5", "m" + m.id === cur && "ring-1 ring-primary")}>
+                className={cn("cursor-pointer rounded-sm bg-sub-head px-3 py-2 text-[0.8rem] hover:bg-primary/15",
+                  "m" + m.id === cur && "x4-sel")}>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                   {m.act && <Badge className="h-4 border-mission bg-mission/15 px-1.5 text-[0.65rem] text-mission">{t("missions.active")}</Badge>}
                   <b className={cn("min-w-0 truncate font-semibold", m.act && "text-mission")} data-mission-name={m.act ? "active" : "inactive"} title={m.n || ""}>{m.n || "–"}</b>
@@ -85,17 +85,17 @@ export function MissionsPanel() {
           <Table className="table-fixed text-[0.8rem]">
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="h-7 px-2 text-[0.68rem] uppercase">{t("missions.c_offer")}</TableHead>
-                <TableHead className="hidden h-7 px-2 text-[0.68rem] uppercase @[40rem]:table-cell">{t("missions.c_faction")}</TableHead>
-                <TableHead className="h-7 w-[6.5rem] px-2 text-right text-[0.68rem] uppercase">{t("missions.c_reward")}</TableHead>
-                <TableHead className="hidden h-7 px-2 text-[0.68rem] uppercase @[30rem]:table-cell">{t("missions.c_sector")}</TableHead>
-                <TableHead className="hidden h-7 w-[4.5rem] px-2 text-[0.68rem] uppercase @[48rem]:table-cell">{t("missions.c_expires")}</TableHead>
+                <TableHead className="h-7 px-2 text-[0.68rem]">{t("missions.c_offer")}</TableHead>
+                <TableHead className="hidden h-7 px-2 text-[0.68rem] @[40rem]:table-cell">{t("missions.c_faction")}</TableHead>
+                <TableHead className="h-7 w-[6.5rem] px-2 text-right text-[0.68rem]">{t("missions.c_reward")}</TableHead>
+                <TableHead className="hidden h-7 px-2 text-[0.68rem] @[30rem]:table-cell">{t("missions.c_sector")}</TableHead>
+                <TableHead className="hidden h-7 w-[4.5rem] px-2 text-[0.68rem] @[48rem]:table-cell">{t("missions.c_expires")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {offers.map((o) => (
-                <TableRow key={o.id} data-key={"o" + o.id} onClick={() => o.s && select({ kind: "sector", id: String(o.s), from: "offers" })}
-                  className={cn("cursor-pointer border-border/40", "o" + o.id === cur && "x4-sel")}>
+                <TableRow key={o.id} data-key={"o" + o.id} data-mission-row onClick={() => o.s && select({ kind: "sector", id: String(o.s), from: "offers" })}
+                  className={cn("cursor-pointer bg-sub-head", "o" + o.id === cur && "x4-sel")}>
                   <TableCell className="truncate px-2 py-1" title={o.n || ""}>{o.n || "–"}</TableCell>
                   <TableCell className="hidden truncate px-2 py-1 @[40rem]:table-cell">{o.fa ? factionName(o.fa) : ""}</TableCell>
                   <TableCell className="truncate px-2 py-1 text-right tabular-nums">{f.money(o.rw, true) ?? text(o.rt) ?? ""}</TableCell>

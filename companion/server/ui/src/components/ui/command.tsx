@@ -120,7 +120,7 @@ function CommandGroup({
     <CommandPrimitive.Group
       data-slot="command-group"
       className={cn(
-        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:-mx-1 [&_[cmdk-group-heading]]:mb-1 [&_[cmdk-group-heading]]:bg-sub-head [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-[0.08em] [&_[cmdk-group-heading]]:text-foreground [&_[cmdk-group-heading]]:uppercase",
+        "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:-mx-1 [&_[cmdk-group-heading]]:mb-1 [&_[cmdk-group-heading]]:bg-section [&_[cmdk-group-heading]]:px-3 [&_[cmdk-group-heading]]:py-1 [&_[cmdk-group-heading]]:text-center [&_[cmdk-group-heading]]:text-sm [&_[cmdk-group-heading]]:font-bold [&_[cmdk-group-heading]]:text-foreground",
         className
       )}
       {...props}
@@ -165,7 +165,7 @@ function CommandShortcut({
     <span
       data-slot="command-shortcut"
       className={cn(
-        "ml-auto text-xs tracking-widest text-muted-foreground",
+        "ml-auto text-xs text-muted-foreground",
         className
       )}
       {...props}

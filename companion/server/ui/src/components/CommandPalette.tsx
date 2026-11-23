@@ -80,7 +80,7 @@ export function CommandPalette() {
             {abandoned.slice(0, LIMIT).map(({ o, sid }) => (
               <CommandItem key={"ab" + sid + o.id} value={"ab-" + sid + "-" + o.id} onSelect={() => jumpObj(o, sid)}>
                 <GameIcon o={o} size={16} /><span className="truncate" style={{ color: listColorCss(o) }}>{o.n || t("class." + o.c, { defaultValue: "?" })}</span>
-                <span className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] font-semibold uppercase" style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}>{t("objects.ownerless_badge")}</span>
+                <span className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] font-semibold" style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}>{t("objects.ownerless_badge")}</span>
                 <CommandShortcut className="tracking-normal">{sectorName(sid)}</CommandShortcut>
               </CommandItem>
             ))}

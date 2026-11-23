@@ -71,7 +71,7 @@ export function ObjectsPanel() {
           const owner = o.pl ? t("objects.own") : ((S.factions[o.o] || {}).sn || (o.o === "ownerless" ? t("objects.ownerless") : o.o) || "");
           return (
             <div key={o.id} data-key={String(o.id)} onClick={() => select({ kind: "obj", id: String(o.id), from: "objects", obj: o, sid })}
-              className={cn("grid cursor-pointer grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-border/40 px-2.5 py-1 text-[0.8rem] hover:bg-primary/10",
+              className={cn("grid cursor-pointer grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 border-b-2 border-transparent px-2.5 py-1 text-[0.8rem] hover:bg-primary/10",
                 "@[22rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_auto] @[30rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto] @[38rem]:grid-cols-[1.5rem_minmax(0,1fr)_2.5rem_5rem_auto_6.5rem]",
                 (String(o.id) === selId || String(o.id) === cur) && "x4-sel")}>
               <span className="flex justify-center"><GameIcon o={o} size={18} /></span>
@@ -79,7 +79,7 @@ export function ObjectsPanel() {
                 <span className="truncate font-medium" style={{ color: listColorCss(o) }} title={name}>{name}</span>
                 {abandoned && (
                   <span data-badge="ownerless" title={t("objects.ownerless_tip")} style={{ color: OWNERLESS_CSS, borderColor: OWNERLESS_CSS }}
-                    className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold uppercase">{t("objects.ownerless_badge")}</span>
+                    className="shrink-0 rounded-sm border border-dashed px-1.5 text-[0.65rem] leading-4 font-semibold">{t("objects.ownerless_badge")}</span>
                 )}
               </span>
               <span className="hidden truncate text-xs text-muted-foreground @[22rem]:block">{cls}</span>

@@ -43,6 +43,26 @@
   /* the two bars composited over the black panel, for sticky headers that rows scroll under (same look, opaque) */
   --x4-header-solid: rgb(0, 66, 112);
   --x4-subheader-solid: rgb(0, 53, 90);
+  /* section header rows (helper.lua:614-621 headerRowCenteredProperties: bold, centred) */
+  --x4-section: rgba(0, 105, 179, 0.102);        /* container_subsection_header :362 -> azure_dark_alpha_26 :231 */
+  --x4-section-solid: rgb(0, 11, 18);            /* the same over the black panel (opaque, for sticky headers) */
+  --x4-panel-header: #000000;                    /* container_panel_header :358 -> black (panel / tab titles, helper.lua:590-597) */
+  --x4-row-highlight: #4db5ff;                   /* table_row_highlight :355 -> azure_bright_moderate_glow: the selected row's outline */
+  --x4-unselectable: #282828;                    /* row_background_unselectable :368 -> grey_40 :66 */
+  --x4-button-bg: #003c66;                       /* button_background_default :381 -> azure_very_dark */
+  --x4-button-highlight: #0095ff;                /* button_highlight_default :387 -> azure (mouse-over fill) */
+  /* the mouse-over fill as shown here: azure 60 % over the button colour, so white text keeps >= 4.5:1
+     (the game's full #0095ff gives 3.1:1) - not a game value */
+  --x4-button-hover: rgb(0, 113, 194);
+  --x4-button-pressed: #202020;                  /* click -> button_background_inactive :383 (widget_fullscreen.lua:15559, hover :15561) */
+  --x4-button-inactive: #202020;                 /* button_background_inactive :383 -> grey_32 */
+  --x4-button-inactive-border: #303030;          /* button_border_inactive :394 -> grey_48 :67 */
+  --x4-editbox-border: #0095ff;                  /* editbox_border :421 -> azure_moderate_glow */
+  /* relative sizes of the game (helper.lua:521-547): text 9, header row 10 bold, title 12 bold; text row 16,
+     header row 20, button 25 - kept as proportions of our base size (follows the UI scale setting) */
+  --x4-fs-text: 0.875rem;
+  --x4-fs-header: calc(0.875rem * 10 / 9);
+  --x4-fs-title: calc(0.875rem * 12 / 9);
   --x4-button-border: rgba(0, 105, 179, 0.627);  /* button_border_default :393 -> azure_dark_alpha_160_glow :233 */
   --x4-panel: rgba(0, 0, 0, 0.973);              /* frame_background_semitransparent :343 -> black_alpha_248 :58 */
   --x4-frame: rgba(255, 255, 255, 0.047);        /* frameborder_default :346 -> white_alpha_12 :49 */
@@ -77,7 +97,6 @@
   --x4-glow: rgba(77, 181, 255, 0.5);
   --x4-glow-shadow: 0 0 8px var(--x4-glow);
   --x4-glow-inset: inset 0 0 10px rgba(77, 181, 255, 0.45);
-  --x4-tracking: 0.08em;
 
   /* ---- shadcn tokens, all mapped onto the game colours */
   --radius: 0.125rem;
@@ -126,6 +145,8 @@
   --sub-head: var(--x4-subheader);
   --panel-head-solid: var(--x4-header-solid);
   --sub-head-solid: var(--x4-subheader-solid);
+  --section: var(--x4-section);
+  --section-solid: var(--x4-section-solid);
   --selected: var(--x4-selected);
   --frame: var(--x4-frame);
   --friend: var(--x4-friend);
@@ -194,6 +215,8 @@
   --color-sub-head: var(--sub-head);
   --color-panel-head-solid: var(--panel-head-solid);
   --color-sub-head-solid: var(--sub-head-solid);
+  --color-section: var(--section);
+  --color-section-solid: var(--section-solid);
   --color-selected: var(--selected);
   --color-frame: var(--frame);
   --color-friend: var(--friend);
@@ -234,40 +257,38 @@
   ::selection { background: var(--x4-selected); color: #fff; }
 }
 
-/* ---- the game's menu elements as utilities (usable with variants: data-[state=on]:x4-on …) */
-/* header bar (row_title): white uppercase text on the azure bar */
+/* ---- the game's menu elements as utilities (usable with variants: data-[state=on]:x4-on …).
+   The game never upper-cases and has no letter-spacing (helper.lua:3204-3216 text properties). */
+/* panel / dialog title (helper.lua:590-597 tabTitleTextProperties + the title line of the header rows,
+   helper.lua:632/641/648 titleColor = row_title): bold on black, a 3 px row_title line under it
+   (widget_fullscreen.lua:761 titleLineHeight = 3, :6240) */
 @utility x4-head {
-  background-color: var(--x4-header);
+  background-color: var(--x4-panel-header);
   color: var(--x4-text);
-  text-transform: uppercase;
-  letter-spacing: var(--x4-tracking);
-  font-weight: 600;
+  font-weight: 700;
+  border-bottom: 3px solid var(--x4-header);
 }
-/* sub-header (row_title_background) */
+/* section header row (helper.lua:614-621): bold, centred, on container_subsection_header */
 @utility x4-subhead {
-  background-color: var(--x4-subheader);
+  background-color: var(--x4-section);
   color: var(--x4-text);
-  text-transform: uppercase;
-  letter-spacing: var(--x4-tracking);
-  font-weight: 600;
+  font-weight: 700;
+  text-align: center;
 }
-/* the on-state of a button / tab / toggle: azure header fill + azure border + glow.
-   !important: a state wins over the element's base / hover utilities whatever their order in the sheet */
+/* a chosen tab / toggle / pressed button: row_background_selected (menu_map.lua:8067-8071,
+   menu_diplomacy.lua:1049). !important: a state wins over base / hover utilities */
 @utility x4-on {
-  background-color: var(--x4-header) !important;
-  border-color: var(--x4-azure-bright) !important;
-  color: var(--x4-text) !important;
-  box-shadow: var(--x4-glow-shadow) !important;
-}
-/* a selected list row (row_background_selected) with a soft glow; secondary text turns white for contrast */
-@utility x4-sel {
   background-color: var(--x4-selected) !important;
+  border-color: var(--x4-button-border) !important;
   color: var(--x4-text) !important;
-  box-shadow: var(--x4-glow-inset) !important;
-  --muted-foreground: var(--x4-text);
-  & [class*="text-foreground/"] { color: var(--x4-text); }
 }
-/* hover / focus glow of an interactive element */
+/* the selected list row: the table highlight outline, no fill (widget_fullscreen.lua:5917-5933
+   table_row_highlight; 2 px clamped to table_borderSize - 1 = 1 px at UI scale 100 %, :8715-8718) */
+@utility x4-sel {
+  outline: 1px solid var(--x4-row-highlight) !important;
+  outline-offset: -1px;
+}
+/* hover / focus glow of an interactive element (kept subtle; the engine's glow) */
 @utility x4-glow {
   box-shadow: var(--x4-glow-shadow);
 }

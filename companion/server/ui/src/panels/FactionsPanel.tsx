@@ -27,7 +27,7 @@ export function FactionsPanel() {
           const lic: Any[] = Array.isArray(fa.lic) ? fa.lic : [];
           return (
             <div key={fa.id} data-key={String(fa.id)}
-              className={cn("grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/40 px-3 py-1.5 text-[0.8rem]",
+              className={cn("grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b-2 border-transparent px-3 py-1.5 text-[0.8rem]",
                 "@[44rem]:grid-cols-[minmax(10rem,14rem)_7.5rem_7rem_minmax(0,1fr)]", String(fa.id) === cur && "x4-sel")}>
               <div className="flex min-w-0 items-center gap-1.5" title={fa.n || fa.id}>
                 <Dot color={factionColor(fa.id)} />

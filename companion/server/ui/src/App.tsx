@@ -58,8 +58,8 @@ function PopoutApp({ id }: { id: PanelId }) {
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-10 shrink-0 items-center gap-3 border-b border-input bg-card px-3">
-        <span className="rounded-sm border border-primary x4-head px-1.5 text-[0.8rem] font-bold">X4</span>
-        <Icon className="size-4 text-primary" /><span className="text-sm font-semibold tracking-[0.08em] uppercase">{t("modules." + id)}</span>
+        <span className="rounded-sm border border-input bg-(--x4-button-bg) px-1.5 text-[0.8rem] font-bold">X4</span>
+        <Icon className="size-4 text-primary" /><span className="text-(length:--x4-fs-title) font-bold">{t("modules." + id)}</span>
         <StateBadge />
         <div className="flex min-w-0 flex-1 justify-center gap-2"><StaleBanner inline /><AlertBanner inline /></div>
         <LangFontControls />

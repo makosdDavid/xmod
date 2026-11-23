@@ -56,7 +56,7 @@ export function Empty({ icon: Icon, title, hint, className }: { icon?: React.Com
 
 export function SectionTitle({ children, className, right }: { children: React.ReactNode; className?: string; right?: React.ReactNode }) {
   return (
-    <div className={cn("mt-4 mb-1.5 flex min-h-6 items-center gap-2 bg-sub-head px-2 py-0.5 text-[0.7rem] font-semibold tracking-[0.08em] text-foreground uppercase first:mt-0", className)}>
+    <div className={cn("mt-4 mb-1.5 flex min-h-[2.2em] items-center justify-center gap-2 bg-section px-2 py-0.5 font-bold text-foreground first:mt-0", className)}>
       <span>{children}</span>
       {right}
     </div>

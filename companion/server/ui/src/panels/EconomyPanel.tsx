@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 function Kpi({ label, value, tone }: { label: string; value: string | null; tone?: "pos" | "neg" | "gold" }) {
   return (
     <Card className="min-w-0 gap-0 rounded-sm px-3 py-2">
-      <div className="truncate text-[0.65rem] tracking-wider text-muted-foreground uppercase" title={label}>{label}</div>
+      <div className="truncate text-[0.65rem] text-muted-foreground" title={label}>{label}</div>
       <div className={cn("truncate text-base font-semibold tabular-nums", tone === "pos" && "text-pos", tone === "neg" && "text-neg", tone === "gold" && "text-gold")}
         title={value ?? ""}>{value ?? "–"}</div>
     </Card>
@@ -65,7 +65,7 @@ export function EconomyPanel() {
               const mo = toNum(x.mo) ?? 0;
               const ware = text(x.wn) ? `${x.wn} ×${f.num(x.am) ?? "?"}` : "";
               return (
-                <div key={i} data-key={"x" + i} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-b border-border/40 py-1 @[34rem]:grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <div key={i} data-key={"x" + i} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-b-2 border-transparent py-1 @[34rem]:grid-cols-[4.5rem_minmax(0,1fr)_minmax(0,1fr)_auto]">
                   <span className="hidden text-xs text-muted-foreground @[34rem]:block">{f.ago(x.t, e.gt) ?? ""}</span>
                   <span className="min-w-0 truncate" title={[x.ty, x.pa].filter(Boolean).join(" · ")}>{text(x.ty) ?? ""}{text(x.pa) && <span className="text-muted-foreground"> · {x.pa}</span>}</span>
                   <span className="hidden min-w-0 truncate text-muted-foreground @[34rem]:block" title={ware}>{ware}</span>
@@ -82,7 +82,7 @@ export function EconomyPanel() {
               {partners.map((p, i) => {
                 const mo = toNum(p.mo) ?? 0;
                 return (
-                  <div key={i} data-key={"p" + i} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/40 py-1">
+                  <div key={i} data-key={"p" + i} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b-2 border-transparent py-1">
                     <span className="truncate" title={p.n || ""}>{p.n || "?"}</span>
                     <span className={cn("text-right tabular-nums", mo >= 0 ? "text-pos" : "text-neg")}>{f.money(mo)}</span>
                   </div>

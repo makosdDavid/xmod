@@ -65,14 +65,14 @@ export function DiagPanel() {
         {ch.length ? (
           <table className="w-full table-fixed text-[0.78rem] tabular-nums">
             <thead>
-              <tr className="border-b text-[0.65rem] tracking-wider text-muted-foreground uppercase">
+              <tr className="border-b text-[0.65rem] text-muted-foreground">
                 <th className="px-1.5 py-1 text-left font-semibold">{t("diag.c_channel")}</th>
                 {CH_COLS.map((c) => <th key={c.k} className={cn("truncate px-1.5 py-1 text-right font-semibold", c.at && "hidden " + c.at)} title={t(c.label)}>{t(c.label)}</th>)}
               </tr>
             </thead>
             <tbody>
               {ch.map(([k, c]) => (
-                <tr key={k} data-key={"c-" + k} className={cn("border-b border-border/40", c.off && "text-warn")}>
+                <tr key={k} data-key={"c-" + k} className={cn("border-b-2 border-transparent", c.off && "text-warn")}>
                   <td className="truncate px-1.5 py-0.5">{k}{c.off && <Badge variant="destructive" className="ml-1 h-4 px-1 text-[0.6rem]">{t("diag.off_badge")}</Badge>}</td>
                   {CH_COLS.map((col) => (
                     <td key={col.k} className={cn("truncate px-1.5 py-0.5 text-right", col.at && "hidden " + col.at)} title={col.k === "err" ? c.le || "" : undefined}>

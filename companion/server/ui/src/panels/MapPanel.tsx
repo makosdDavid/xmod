@@ -52,7 +52,7 @@ export function MapPanel({ mode, collapsed, parentDir }: { mode: FrameMode; coll
         {hint && anchor && !collapsed && (
           <div role="note" className="absolute z-20 w-72 rounded-sm x4-float p-3 pt-0 text-xs"
             style={{ top: anchor.top, right: anchor.right }}>
-            <div className="-mx-3 mb-2 flex items-center gap-2 x4-head px-3 py-1.5">
+            <div className="-mx-3 mb-2 flex items-center gap-2 x4-head px-3 py-1.5 text-(length:--x4-fs-header)">
               <Layers className="size-4" />{t("maphint.title")}
               <button type="button" onClick={dismiss} aria-label={t("maphint.ok")} className="ml-auto rounded-sm p-0.5 text-foreground/80 hover:bg-selected hover:text-foreground"><X className="size-3.5" /></button>
             </div>

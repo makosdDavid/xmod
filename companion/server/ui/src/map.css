@@ -20,7 +20,7 @@ body[data-state="paused"] .x4c-work, body[data-state="background"] .x4c-work { f
 [data-slot="resizable-handle"] > div { opacity: 0.6; transition: opacity .15s, background-color .15s, border-color .15s; }
 [data-slot="resizable-handle"]:hover > div, [data-slot="resizable-handle"][data-separator="active"] > div,
 [data-slot="resizable-handle"][data-resize-handle-state="drag"] > div {
-  opacity: 1; background: var(--x4-header); border-color: var(--x4-azure-bright); color: #fff; box-shadow: var(--x4-glow-shadow); }
+  opacity: 1; background: var(--x4-button-hover); border-color: var(--x4-row-highlight); color: #fff; }
 
 /* ---------------------------------------------------------------- map container (holomap backdrop: unchanged) */
 .x4map-slot { background: #040a16; }
@@ -31,27 +31,30 @@ body[data-state="paused"] .x4c-work, body[data-state="background"] .x4c-work { f
 .mapcanvas { cursor: grab; touch-action: none; }
 .mapcanvas.dragging { cursor: grabbing; }
 
-/* the map's own controls (buttons, chips, select): flat game buttons */
+/* the map's own controls (buttons, chips, select): the game's buttons (helper.lua:3227-3229) */
 .x4map-root button, .x4map-toolslot button, .x4map-toolslot select {
   font: inherit; color: var(--foreground); border: 1px solid var(--x4-button-border); border-radius: var(--radius-sm);
-  background: var(--x4-panel); cursor: pointer; transition: background-color .15s, border-color .15s, box-shadow .15s;
+  background: var(--x4-button-bg); cursor: pointer; transition: background-color .15s, border-color .15s;
 }
-.x4map-root button:hover, .x4map-toolslot button:hover { border-color: var(--x4-azure-bright); background: var(--x4-subheader); }
+.x4map-root button:hover, .x4map-toolslot button:hover { background: var(--x4-button-hover); }
+.x4map-root button:active, .x4map-toolslot button:active { background: var(--x4-button-pressed); }
 .x4map-toolslot select { height: 1.75rem; padding: 0 0.4rem; font-size: 0.75rem; max-width: 22rem; text-overflow: ellipsis; }
 .x4map-toolslot select option { background: var(--x4-black); color: var(--foreground); }
 .x4map-toolslot select:focus { outline: none; border-color: var(--ring); box-shadow: var(--x4-glow-shadow); }
 .x4map-toolslot .muted { color: var(--x4-text); opacity: 0.85; }
-.segs { display: inline-flex; border: 1px solid var(--x4-button-border); border-radius: var(--radius-sm); overflow: hidden; background: var(--x4-panel); }
-.segs .seg { border: none !important; border-radius: 0 !important; height: 1.75rem; padding: 0 0.65rem; font-size: 0.75rem; background: transparent !important;
-  text-transform: uppercase; letter-spacing: var(--x4-tracking); }
+/* Sector / Galaxy: tabs (menu_map.lua:8067-8071 row_title_background, the chosen one row_background_selected) */
+.segs { display: inline-flex; border: 1px solid var(--x4-button-border); border-radius: var(--radius-sm); overflow: hidden; background: var(--x4-subheader); }
+.segs .seg { border: none !important; border-radius: 0 !important; height: 1.75rem; padding: 0 0.65rem; font-size: 0.75rem; background: transparent !important; font-weight: 700;
+}
 .segs .seg + .seg { border-left: 1px solid var(--x4-button-border) !important; }
-.segs .seg.on { background: var(--x4-header) !important; color: #fff; box-shadow: inset 0 0 0 1px var(--x4-azure-bright), var(--x4-glow-inset); }
+.segs .seg:hover { background: var(--x4-button-hover) !important; }
+.segs .seg.on { background: var(--x4-selected) !important; color: #fff; }
 
 /* ship-follow menu (map.js sets inline styles; the shell overrides them with the game look) */
 .x4map-followmenu { background: var(--x4-black) !important; border: 1px solid var(--x4-button-border) !important; border-radius: var(--radius-sm) !important;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.6) !important; font-family: var(--font-sans-stack); }
 .x4map-followmenu button { font: inherit; color: var(--foreground); background: transparent; border: 1px solid transparent; border-radius: 0; cursor: pointer; }
-.x4map-followmenu button:hover { background: var(--x4-subheader); }
+.x4map-followmenu button:hover { outline: 1px solid var(--x4-row-highlight); outline-offset: -1px; }
 .x4map-followmenu button[aria-checked="true"] { background: var(--x4-selected); color: #fff; }
 
 /* info box (top left) */
@@ -68,14 +71,13 @@ body[data-state="paused"] .x4c-work, body[data-state="background"] .x4c-work { f
   max-height: calc(100% - 3.5rem); overflow-y: auto; scrollbar-width: none; }
 .x4map-root .chip { padding: 3px 10px; border-radius: var(--radius-sm); font-size: 0.78rem; text-align: left; color: var(--x4-text-low); }
 .layers .chip { border-color: transparent; background: transparent; }
-.layers .chip:hover { border-color: var(--x4-button-border); }
-.x4map-root .chip.on { color: #fff; background: var(--x4-header); border-color: var(--x4-azure-bright); }
-.layers .chip.on { box-shadow: var(--x4-glow-inset); }
+.layers .chip:hover { background: transparent; outline: 1px solid var(--x4-row-highlight); outline-offset: -1px; }
+.x4map-root .chip.on { color: #fff; background: var(--x4-selected); border-color: transparent; }
 .layers .chip.on::before { content: "✓ "; color: #fff; }
 /* discoverability: the Layers button is the entry to heading, names, radar, legend, mini galaxy… */
-.x4map-root .layers-btn { background: var(--x4-header-solid); border-color: var(--x4-azure-bright); color: #fff; font-weight: 600;
-  padding: 4px 12px; box-shadow: var(--x4-glow-shadow); text-transform: uppercase; letter-spacing: var(--x4-tracking); }
-.x4map-root .layers-btn:hover, .x4map-root .layers-btn.on { background: var(--x4-header-solid); border-color: #fff; }
+.x4map-root .layers-btn { background: var(--x4-button-bg); border-color: var(--x4-button-border); color: #fff; font-weight: 700; padding: 4px 12px; }
+.x4map-root .layers-btn:hover { background: var(--x4-button-hover); }
+.x4map-root .layers-btn.on { background: var(--x4-selected); color: #fff; }
 .x4map-root .layers-btn::before { content: ""; display: inline-block; width: 0.85em; height: 0.85em; margin-right: 0.4em; vertical-align: -0.1em;
   background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5z'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5z'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3C/svg%3E") center / contain no-repeat; }
@@ -83,8 +85,8 @@ body[data-state="paused"] .x4c-work, body[data-state="background"] .x4c-work { f
 /* legend panel */
 .maplegend2 { position: absolute; bottom: 44px; right: 60px; padding: 0 10px 8px; background: var(--x4-black); border: 1px solid var(--x4-button-border);
   border-radius: var(--radius-sm); font-size: 0.78rem; box-shadow: 0 8px 24px rgb(0 0 0 / 0.6); z-index: 3; }
-.lgtitle { font-weight: 600; margin: 0 -10px 6px; padding: 3px 10px; background: var(--x4-subheader); color: #fff;
-  text-transform: uppercase; letter-spacing: var(--x4-tracking); }
+.lgtitle { font-weight: 700; margin: 0 -10px 6px; padding: 3px 10px; background: var(--x4-black); color: #fff; text-align: center;
+  border-bottom: 3px solid var(--x4-header); }
 .lgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 14px; }
 .lgi { display: flex; align-items: center; gap: 6px; }
 .swatch.radar { width: 20px; height: 14px; border-radius: 3px; background: rgba(90, 150, 230, .4); border: 1px solid rgba(90, 150, 230, .6); }
@@ -102,11 +104,11 @@ body[data-state="paused"] .x4c-work, body[data-state="background"] .x4c-work { f
 .followbadge.focus { color: var(--x4-azure-bright); border-color: var(--x4-azure-bright); }
 .followbadge.off { color: var(--x4-warning); border-color: var(--x4-warning); }
 
-/* "back to my ship": a flat game button in the on-state */
+/* "back to my ship": a game button */
 .x4map-root .backbtn { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 20px; font-size: 0.9rem; font-weight: 600; border-radius: var(--radius-sm); color: #fff; z-index: 3; text-transform: uppercase; letter-spacing: var(--x4-tracking);
-  background: var(--x4-header-solid); border: 1px solid var(--x4-azure-bright); box-shadow: var(--x4-glow-shadow); }
-.x4map-root .backbtn:hover { background: var(--x4-header-solid); border-color: #fff; }
+  padding: 7px 20px; font-size: 0.9rem; font-weight: 700; border-radius: var(--radius-sm); color: #fff; z-index: 3;
+  background: var(--x4-button-bg); border: 1px solid var(--x4-button-border); }
+.x4map-root .backbtn:hover { background: var(--x4-button-hover); }
 
 /* hover tooltip */
 .maptip { position: absolute; z-index: 5; pointer-events: none; padding: 3px 9px; border-radius: var(--radius-sm); background: var(--x4-black);

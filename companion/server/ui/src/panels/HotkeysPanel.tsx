@@ -28,11 +28,11 @@ export function HotkeysPanel() {
         <SectionTitle>{t("help.ingame_title")}</SectionTitle>
         <div className="flex flex-col">
           {HOTKEYS.map(([id, ingame]) => (
-            <div key={id} data-key={id} className="grid grid-cols-1 gap-x-4 border-b border-border/40 py-1.5 @[40rem]:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
+            <div key={id} data-key={id} className="grid grid-cols-1 gap-x-4 border-b-2 border-transparent py-1.5 @[40rem]:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
               <div>
                 <div className="font-medium">{t("hk." + id)}</div>
                 <div className="text-xs text-muted-foreground" title={t("help.col_name")}>
-                  {lang === "hu" ? null : <span className="mr-1 text-[0.65rem] uppercase tracking-wider">{t("help.in_game")}</span>}{ingame}
+                  {lang === "hu" ? null : <span className="mr-1 text-[0.65rem]">{t("help.in_game")}</span>}{ingame}
                 </div>
               </div>
               <div className="text-foreground/75">{t("hkdesc." + id)}</div>
@@ -43,7 +43,7 @@ export function HotkeysPanel() {
         <SectionTitle className="mt-5">{t("help.browser_title")}</SectionTitle>
         <div className="flex flex-col">
           {KEYS.map(([keys, label]) => (
-            <div key={label} data-key={label} className="grid grid-cols-[minmax(7rem,9rem)_minmax(0,1fr)] items-center gap-x-4 border-b border-border/40 py-1.5">
+            <div key={label} data-key={label} className="grid grid-cols-[minmax(7rem,9rem)_minmax(0,1fr)] items-center gap-x-4 border-b-2 border-transparent py-1.5">
               <span className="flex flex-wrap gap-1">{keys.map((k) => k === "…" ? <span key={k} className="text-muted-foreground">–</span> : <Kbd key={k}>{k}</Kbd>)}</span>
               <span className="text-foreground/80">{t(label)}</span>
             </div>

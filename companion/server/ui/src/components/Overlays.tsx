@@ -25,8 +25,8 @@ export function InfoSheet({ single = false }: { single?: boolean }) {
     <Sheet open={open} modal={false} onOpenChange={(o) => { if (!o) select(null); }}>
       <SheetContent side="right" className="top-24 bottom-3 h-auto w-[23rem] gap-0 rounded-l-sm border border-r-0 border-input p-0 sm:max-w-[23rem]"
         onInteractOutside={(e) => e.preventDefault()} onOpenAutoFocus={(e) => e.preventDefault()}>
-        <SheetHeader className="border-b border-input x4-head px-4 py-2.5">
-          <SheetTitle className="text-[0.8rem] font-semibold text-foreground">{t("modules.info")}</SheetTitle>
+        <SheetHeader className="x4-head px-4 py-2.5">
+          <SheetTitle className="text-center text-(length:--x4-fs-title) font-bold text-foreground">{t("modules.info")}</SheetTitle>
           <SheetDescription className="sr-only">{t("info.details_title")}</SheetDescription>
         </SheetHeader>
         <FitScroll className="@container"><InfoView /></FitScroll>
